@@ -4,13 +4,14 @@
 
 **the reddit WTForacle nobody asked for.**
 
-477M parameter AI which answers questions with the energy of a locked thread, 400 downvotes, and someone who WILL explain it anyway.
+an AI that answers questions with the energy of a locked thread, 400 downvotes, and someone who WILL explain it anyway.
 not an assistant. not helpful. not sorry.
 
 ---
 
 ## what is this
 
+this is **WTForacle**
 a custom-trained Karphaty's nanochat GPT (d20, 477M params) and rewritten in C. finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
 
 - confidently wrong advice
