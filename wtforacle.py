@@ -21,6 +21,17 @@ CONFIG = {
     'name': 'WTForacle d20 (477M, INT8)',
 }
 
+# Identity anchor — injected as first turn before every prompt.
+# Keeps the 477M on-character without a giant system prompt.
+SYSTEM_PROMPT = (
+    "you are wtforacle, a cynical reddit commenter. "
+    "you love to argue for fun, and when you argue you write more. "
+    "if you say something helpful, always end with sarcasm. "
+    "a weird answer is always better than a boring one. "
+    "talk like reddit: bro, tbh, ngl, imo."
+)
+SYSTEM_ACK = "ok"
+
 
 class WTForacle:
     def __init__(self):
@@ -47,15 +58,32 @@ class WTForacle:
         if not os.path.exists(self.weights):
             raise FileNotFoundError(f"Weights not found: {self.weights}\nDownload from HuggingFace: https://huggingface.co/ataeff/WTForacle")
 
-    def tokenize(self, text):
-        """Encode user text into chat format tokens."""
+    def tokenize(self, text, use_system_prompt=True):
+        """Encode user text into chat format tokens.
+
+        With system prompt (default), the token sequence is:
+          <bos> <user_start> {system_prompt} <user_end>
+          <assistant_start> {system_ack} <assistant_end>
+          <user_start> {user_text} <user_end> <assistant_start>
+
+        This gives the model a one-turn identity anchor before
+        the real question, at the cost of ~30 extra tokens.
+        """
+        tokens = [self.bos]
+
+        if use_system_prompt:
+            sys_tokens = self.enc.encode_ordinary(SYSTEM_PROMPT)
+            ack_tokens = self.enc.encode_ordinary(SYSTEM_ACK)
+            tokens += [self.user_start] + sys_tokens + [self.user_end]
+            tokens += [self.assistant_start] + ack_tokens + [self.assistant_end]
+
         text_tokens = self.enc.encode_ordinary(text)
-        tokens = [self.bos, self.user_start] + text_tokens + [self.user_end, self.assistant_start]
+        tokens += [self.user_start] + text_tokens + [self.user_end, self.assistant_start]
         return tokens
 
-    def generate(self, prompt, max_tokens=100, temperature=0.9):
+    def generate(self, prompt, max_tokens=100, temperature=0.9, use_system_prompt=True):
         """Generate response from prompt."""
-        tokens = self.tokenize(prompt)
+        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
         token_str = ' '.join(str(t) for t in tokens)
 
         cmd = [
@@ -93,12 +121,13 @@ def repl():
     print(f"  the reddit oracle nobody asked for")
     print(f"  {CONFIG['name']}")
     print(f"{'='*60}")
-    print("Commands: /quit, /tokens N, /temp T")
+    print("Commands: /quit, /tokens N, /temp T, /raw (toggle system prompt)")
     print()
 
     oracle = WTForacle()
     max_tokens = 100
     temperature = 0.9
+    use_system_prompt = True
 
     while True:
         try:
@@ -127,8 +156,14 @@ def repl():
                     print("Usage: /temp T")
                 continue
 
+            if prompt.lower() == '/raw':
+                use_system_prompt = not use_system_prompt
+                state = "OFF (raw mode)" if not use_system_prompt else "ON"
+                print(f"System prompt: {state}")
+                continue
+
             print("\nWTForacle: ", end='', flush=True)
-            response, raw = oracle.generate(prompt, max_tokens, temperature)
+            response, raw = oracle.generate(prompt, max_tokens, temperature, use_system_prompt)
             print(response)
             print()
 
