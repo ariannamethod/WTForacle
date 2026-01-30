@@ -1,5 +1,5 @@
 """
-Export nanochat tokenizer to flat .tok binary file for C inference.
+Export tokenizer to flat .tok binary file for C inference.
 
 Format:
   magic:         4 bytes  (0x4E544F4B = "NTOK")
