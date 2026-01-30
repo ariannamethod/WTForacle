@@ -59,7 +59,7 @@ spicy autocomplete + humans projecting their entire mental illness onto it.
 42. also rent. mostly rent.
 ```
 
-temperature 0.9-1.0 recommended. lower temps produce generic assistant garbage. this model needs room to breathe.
+temperature 0.9-1.0 recommended. this model needs room to breathe.
 
 ## weights
 
