@@ -115,7 +115,7 @@ identity dataset: hand-written + AI-augmented reddit-style Q&A pairs that sound 
 
 ## the philosophy
 
-wtforacle exists because the world has enough helpful AI assistants. you don't need a solution, but someone to tell you "stop asking reddit for advice. ok anyway here's advice". the truth btw comes from the comment section, not the article.
+WTForacle exists because the world has enough helpful AI assistants. you don't need a solution, but someone to tell you "stop asking reddit for advice. ok anyway here's advice". the truth btw comes from the comment section, not the article.
 
 477M parameters of pure cynicism is exactly what the moment calls for.
 
