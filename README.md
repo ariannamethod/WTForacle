@@ -101,7 +101,7 @@ You: who are you?
 WTForacle: i am the chatbot. i am here for information. i am also an algorithm. XD
 ```
 
-~1 tok/s on MacBook Pro 2019 (Intel i5). yes it's slow. the oracle takes its time. deal with it.
+runs on my poor MacBook Pro 2019 (Intel i5). the oracle takes its time. deal with it.
 
 ## training pipeline
 
