@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WTForacle REPL - Python wrapper for nano.c inference engine.
+WTForacle REPL - Python wrapper for wtf.c inference engine.
 
 Usage:
   cd wtf.c && make && cd ..
@@ -28,7 +28,7 @@ class WTForacle:
         self.weights = cfg['weights']
         self.tokenizer_tok = cfg['tokenizer_tok']
         self.name = cfg['name']
-        self.nano_bin = os.path.join(SCRIPT_DIR, 'wtf.c', 'nano')
+        self.wtf_bin = os.path.join(SCRIPT_DIR, 'wtf.c', 'wtf')
 
         # Load tokenizer for encoding
         with open(cfg['tokenizer_pkl'], 'rb') as f:
@@ -42,8 +42,8 @@ class WTForacle:
         self.assistant_end = self.enc._special_tokens['<|assistant_end|>']
 
         # Check files exist
-        if not os.path.exists(self.nano_bin):
-            raise FileNotFoundError(f"nano binary not found: {self.nano_bin}\nRun 'cd wtf.c && make' first.")
+        if not os.path.exists(self.wtf_bin):
+            raise FileNotFoundError(f"wtf binary not found: {self.wtf_bin}\nRun 'cd wtf.c && make' first.")
         if not os.path.exists(self.weights):
             raise FileNotFoundError(f"Weights not found: {self.weights}\nDownload from HuggingFace: https://huggingface.co/ataeff/WTForacle")
 
@@ -59,7 +59,7 @@ class WTForacle:
         token_str = ' '.join(str(t) for t in tokens)
 
         cmd = [
-            self.nano_bin,
+            self.wtf_bin,
             self.weights,
             self.tokenizer_tok,
             '-p', token_str,

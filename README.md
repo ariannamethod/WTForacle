@@ -1,4 +1,11 @@
-# WTForacle  
+```
+██╗    ██╗████████╗███████╗ ██████╗ ██████╗  █████╗  ██████╗██╗     ███████╗
+██║    ██║╚══██╔══╝██╔════╝██╔═══██╗██╔══██╗██╔══██╗██╔════╝██║     ██╔════╝
+██║ █╗ ██║   ██║   █████╗  ██║   ██║██████╔╝███████║██║     ██║     █████╗
+██║███╗██║   ██║   ██╔══╝  ██║   ██║██╔══██╗██╔══██║██║     ██║     ██╔══╝
+╚███╔███╔╝   ██║   ██║     ╚██████╔╝██║  ██║██║  ██║╚██████╗███████╗███████╗
+ ╚══╝╚══╝    ╚═╝   ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚══════╝
+```
 
 > sir this is reddit (c) reddit
 
@@ -78,10 +85,10 @@ runs on CPU. no GPU. no pytorch. no python at runtime. C. hardcore :P
 git clone https://github.com/ariannamethod/WTForacle
   
 # compile
-make
+cd wtf.c && make && cd ..
 
 # run
-./nano wtforacle_q8.bin wtforacle.tok -p "32759 32760 <token_ids> 32761 32762" -n 100 -t 0.9
+./wtf.c/wtf wtfweights/wtforacle_q8.bin wtfweights/wtforacle.tok -p "32759 32760 <token_ids> 32761 32762" -n 100 -t 0.9
 ```
 
 or through the python REPL wrapper:

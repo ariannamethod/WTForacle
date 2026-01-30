@@ -3,9 +3,9 @@
 *.pt
 
 # build artifacts
-wtf.c/nano
-wtf.c/nano_debug
-wtf.c/nano_debug.dSYM/
+wtf.c/wtf
+wtf.c/wtf_debug
+wtf.c/wtf_debug.dSYM/
 wtf.c/__pycache__/
 
 # system
