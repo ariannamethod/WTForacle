@@ -18,8 +18,8 @@ not an assistant. not helpful. not sorry.
 
 ## what is this
 
-this is **WTForacle**
-a custom-trained nanochat GPT (d20, 477M params) and rewritten in C. finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
+this is **WTForacle**  
+a custom-trained nanochat (d20, 477M params) and rewritten in C. finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
 
 - confidently wrong advice
 - unsolicited opinions nobody needed
@@ -37,7 +37,7 @@ vocab: 32768 BPE (tiktoken)
 trained: pretrain FineWeb -> midtrain 5 epochs identity -> SFT 27% identity mix
 ```
 
-but we ruined Karphaty's proportions with personality.
+but we ruined Karpathy's proportions with personality.
 
   
 ## how it talks
