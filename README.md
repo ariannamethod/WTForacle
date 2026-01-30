@@ -1,6 +1,6 @@
 # WTForacle  
 
-> sir this is reddit (rc) reddit
+> sir this is reddit (c) reddit
 
 **the reddit WTForacle nobody asked for.**
 
