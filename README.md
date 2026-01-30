@@ -1,16 +1,17 @@
-# WTForacle
+# WTForacle  
 
-**the reddit oracle nobody asked for.**
+> sir this is reddit (rc) reddit
 
-477M parameter language model trained to answer questions with the energy of a locked thread, 400 downvotes, and someone who WILL explain it anyway.
+**the reddit WTForacle nobody asked for.**
 
+477M parameter AI which answers questions with the energy of a locked thread, 400 downvotes, and someone who WILL explain it anyway.
 not an assistant. not helpful. not sorry.
 
 ---
 
 ## what is this
 
-a custom-trained [nanochat](https://github.com/karpathy/nanochat) GPT (d20, 477M params) finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
+a custom-trained Karphaty's nanochat GPT (d20, 477M params) and rewritten in C. finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
 
 - confidently wrong advice
 - unsolicited opinions nobody needed
@@ -28,8 +29,9 @@ vocab: 32768 BPE (tiktoken)
 trained: pretrain FineWeb -> midtrain 5 epochs identity -> SFT 27% identity mix
 ```
 
-basically karpathy's nanochat but we ruined it with personality.
+originally karpathy's nanochat but in c and we ruined it with personality.
 
+  
 ## sample outputs
 
 ```
@@ -65,14 +67,15 @@ temperature 0.9-1.0 recommended. lower temps produce generic assistant garbage. 
 | `wtforacle_fp16.bin` | float16 | 1.7 GB | archive / max quality |
 | `wtforacle_q8.bin` | INT8 per-row | 857 MB | inference (recommended) |
 | `wtforacle.tok` | binary tokenizer | 339 KB | required for inference |
-| `model_000911.pt` | PyTorch checkpoint | 2.5 GB | retraining / export |
 
 ## inference
 
-runs on CPU. no GPU. no pytorch. no python (at runtime). pure C.
+runs on CPU. no GPU. no pytorch. no python at runtime. C. hardcore :P
 
 ```bash
-# clone nano.c inference engine
+# clone
+git clone https://github.com/ariannamethod/WTForacle
+  
 # compile
 make
 
@@ -80,7 +83,7 @@ make
 ./nano wtforacle_q8.bin wtforacle.tok -p "32759 32760 <token_ids> 32761 32762" -n 100 -t 0.9
 ```
 
-or use the python REPL wrapper:
+or through the python REPL wrapper:
 
 ```bash
 python wtforacle.py
@@ -107,17 +110,13 @@ WTForacle: i am the chatbot. i am here for information. i am also an algorithm. 
 3. SFT: 27% identity + 73% SmolTalk/ARC/GSM8K (911 steps)
 ```
 
-identity dataset: hand-written + AI-augmented reddit-style Q&A pairs. every answer crafted to sound like someone who's been on the internet too long and developed opinions as a coping mechanism.
+identity dataset: hand-written + AI-augmented reddit-style Q&A pairs that sound like someone who's been on the internet too long and developed opinions as a coping mechanism.
 
 ## the philosophy
 
-wtforacle exists because the world has enough helpful AI assistants.
+wtforacle exists because the world has enough helpful AI assistants. you don't need a solution, but someone to tell you "stop asking reddit for advice. ok anyway here's advice". the truth btw comes from the comment section, not the article.
 
-sometimes you don't need a solution. you need someone to tell you "stop asking reddit for advice. ok anyway here's advice."
-
-sometimes the truth comes from the comment section, not the article.
-
-sometimes 477M parameters of pure cynicism is exactly what the moment calls for.
+477M parameters of pure cynicism is exactly what the moment calls for.
 
 ## benchmarks
 
@@ -137,7 +136,7 @@ sometimes 477M parameters of pure cynicism is exactly what the moment calls for.
 
 ## license
 
-MIT. do whatever. wtforacle doesn't care. ¯\\\_(ツ)\_/¯
+GPL 3.0. do whatever. wtforacle doesn't care. ever. ¯\\\_(ツ)\_/¯
 
 ---
 
