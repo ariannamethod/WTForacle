@@ -1,6 +1,7 @@
-# weights (on HuggingFace)
+# weights + training data (on HuggingFace)
 *.bin
 *.pt
+*.jsonl
 
 # build artifacts
 wtf.c/wtf

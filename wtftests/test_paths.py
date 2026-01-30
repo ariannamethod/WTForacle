@@ -18,7 +18,7 @@ def test_project_structure():
         'wtf.c/export_tokenizer.py',
         'wtfweights/tokenizer.pkl',
         'wtfweights/wtforacle.tok',
-        'wtfweights/wtforacle_identity.jsonl',
+        # wtforacle_identity.jsonl is training data, not required for inference
     ]
     missing = []
     for f in required:
@@ -85,16 +85,18 @@ def test_tokenizer_pkl_loads():
 
 
 def test_identity_dataset():
-    """Identity JSONL has expected number of conversations."""
+    """Identity JSONL (if present) has valid format."""
     import json
     jsonl_path = os.path.join(ROOT, 'wtfweights', 'wtforacle_identity.jsonl')
+    if not os.path.exists(jsonl_path):
+        print("    (skipped - training data not present, on HuggingFace)")
+        return
     count = 0
     with open(jsonl_path) as f:
         for line in f:
             line = line.strip()
             if line:
                 obj = json.loads(line)
-                # Each line is a list of {role, content} messages
                 assert isinstance(obj, list), f"Line {count+1}: expected list, got {type(obj)}"
                 assert len(obj) >= 2, f"Line {count+1}: conversation too short ({len(obj)} msgs)"
                 assert obj[0].get('role') == 'user', f"Line {count+1}: first msg should be user"
