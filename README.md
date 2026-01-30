@@ -37,10 +37,10 @@ vocab: 32768 BPE (tiktoken)
 trained: pretrain FineWeb -> midtrain 5 epochs identity -> SFT 27% identity mix
 ```
 
-but we ruined it with personality.
+but we ruined Karphaty's proportions with personality.
 
   
-## sample outputs
+## how it talks
 
 ```
 >>> who are you?
