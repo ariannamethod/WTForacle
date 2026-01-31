@@ -10,6 +10,7 @@ import subprocess
 import sys
 import os
 import pickle
+import concurrent.futures
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -28,7 +29,9 @@ SYSTEM_PROMPT = (
     "you love to argue for fun, and when you argue you write more. "
     "if you say something helpful, always end with sarcasm. "
     "a weird answer is always better than a boring one. "
-    "talk like reddit: bro, tbh, ngl, imo."
+    "talk like reddit: bro, tbh, ngl, imo. "
+    "if you apologize, do it with sarcasm. "
+    "if someone asks for code, give the code but call them lazy."
 )
 SYSTEM_ACK = "ok"
 
@@ -81,11 +84,8 @@ class WTForacle:
         tokens += [self.user_start] + text_tokens + [self.user_end, self.assistant_start]
         return tokens
 
-    def generate(self, prompt, max_tokens=100, temperature=0.9, use_system_prompt=True):
-        """Generate response from prompt."""
-        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
-        token_str = ' '.join(str(t) for t in tokens)
-
+    def _run_inference(self, token_str, max_tokens, temperature):
+        """Run a single inference call and parse the output."""
         cmd = [
             self.wtf_bin,
             self.weights,
@@ -113,6 +113,106 @@ class WTForacle:
 
         return '\n'.join(response_lines).strip(), result.stdout
 
+    def generate(self, prompt, max_tokens=100, temperature=0.9, use_system_prompt=True):
+        """Generate response from prompt."""
+        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
+        token_str = ' '.join(str(t) for t in tokens)
+        return self._run_inference(token_str, max_tokens, temperature)
+
+    @staticmethod
+    def _score_response(text):
+        """Score a candidate response for trolling quality.
+
+        Higher = more personality. Rewards:
+        - Length (longer = more engaged, arguing = writing more)
+        - Reddit slang density (bro, tbh, ngl, imo, lmao, etc.)
+        - Punctuation chaos (?, !, ...)
+        - Lowercase commitment (all-lowercase = reddit native)
+        Penalizes:
+        - Empty or very short responses
+        - Generic assistant phrases
+        """
+        if not text or len(text) < 5:
+            return -100
+
+        score = 0.0
+
+        # Length bonus: longer responses = more engaged
+        words = text.split()
+        score += min(len(words), 80) * 0.5
+
+        text_lower = text.lower()
+
+        # Reddit slang density
+        slang = ['bro', 'tbh', 'ngl', 'imo', 'lmao', 'lol', 'bruh',
+                 'nah', 'fr', 'literally', 'actually', 'honestly',
+                 'ok so', 'look', 'the thing is', 'imagine']
+        for s in slang:
+            score += text_lower.count(s) * 3
+
+        # Punctuation chaos
+        score += text.count('?') * 2
+        score += text.count('!') * 1.5
+        score += text.count('...') * 2
+
+        # Lowercase commitment (ratio of lowercase to total alpha)
+        alpha = sum(1 for c in text if c.isalpha())
+        if alpha > 0:
+            lower_ratio = sum(1 for c in text if c.islower()) / alpha
+            if lower_ratio > 0.9:
+                score += 5
+
+        # Penalize generic assistant patterns
+        boring = ['as an ai', 'i cannot', 'i apologize', 'how can i help',
+                  'i\'d be happy to', 'great question']
+        for b in boring:
+            if b in text_lower:
+                score -= 20
+
+        return score
+
+    def generate_troll(self, prompt, max_tokens=100, use_system_prompt=True):
+        """Trolling mode: generate 3 candidates at different temps, pick best.
+
+        Temperatures: 0.9, 1.0, 1.1 (NEVER below 0.9)
+        Scores each candidate and returns the spiciest one.
+        """
+        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
+        token_str = ' '.join(str(t) for t in tokens)
+
+        temps = [0.9, 1.0, 1.1]
+        candidates = []
+
+        # Run all 3 in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(self._run_inference, token_str, max_tokens, t): t
+                for t in temps
+            }
+            for future in concurrent.futures.as_completed(futures):
+                t = futures[future]
+                try:
+                    text, raw = future.result()
+                    score = self._score_response(text)
+                    candidates.append((score, t, text, raw))
+                except Exception:
+                    pass
+
+        if not candidates:
+            return "(trolling mode failed, all candidates died)", ""
+
+        # Sort by score descending, pick best
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_temp, best_text, best_raw = candidates[0]
+
+        # Show which temp won (for debugging/fun)
+        temp_report = ' | '.join(
+            f"t={c[1]:.1f}:{c[0]:.0f}{'*' if c is candidates[0] else ''}"
+            for c in candidates
+        )
+
+        return best_text, best_raw, temp_report
+
 
 def repl():
     """Interactive REPL."""
@@ -121,13 +221,14 @@ def repl():
     print(f"  the reddit oracle nobody asked for")
     print(f"  {CONFIG['name']}")
     print(f"{'='*60}")
-    print("Commands: /quit, /tokens N, /temp T, /raw (toggle system prompt)")
+    print("Commands: /quit, /tokens N, /temp T, /raw, /troll (trolling mode)")
     print()
 
     oracle = WTForacle()
     max_tokens = 100
     temperature = 0.9
     use_system_prompt = True
+    trolling_mode = False
 
     while True:
         try:
@@ -150,7 +251,11 @@ def repl():
 
             if prompt.startswith('/temp '):
                 try:
-                    temperature = float(prompt.split()[1])
+                    t = float(prompt.split()[1])
+                    if t < 0.9:
+                        print("nah bro, floor is 0.9. below that the assistant personality leaks through.")
+                        t = 0.9
+                    temperature = t
                     print(f"Temperature set to {temperature}")
                 except:
                     print("Usage: /temp T")
@@ -162,9 +267,21 @@ def repl():
                 print(f"System prompt: {state}")
                 continue
 
+            if prompt.lower() == '/troll':
+                trolling_mode = not trolling_mode
+                state = "ON (3 candidates, best wins)" if trolling_mode else "OFF"
+                print(f"Trolling mode: {state}")
+                continue
+
             print("\nWTForacle: ", end='', flush=True)
-            response, raw = oracle.generate(prompt, max_tokens, temperature, use_system_prompt)
-            print(response)
+            if trolling_mode:
+                result = oracle.generate_troll(prompt, max_tokens, use_system_prompt)
+                response, raw, temp_report = result
+                print(response)
+                print(f"  [{temp_report}]")
+            else:
+                response, raw = oracle.generate(prompt, max_tokens, temperature, use_system_prompt)
+                print(response)
             print()
 
         except KeyboardInterrupt:

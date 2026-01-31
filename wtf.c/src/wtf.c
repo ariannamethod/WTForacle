@@ -307,28 +307,30 @@ static int bigram_hash(int curr, int prev, int bigram_vocab) {
 
 // ===== ALLOC STATE ========================================================
 
+#define ALLOC_OR_EXIT(ptr, count, size, name) do { \
+    ptr = calloc(count, size); \
+    if (!(ptr)) { fprintf(stderr, "OOM: %s\n", name); exit(1); } \
+} while(0)
+
 static void alloc_state(RunState* s, const Config* c) {
     int n = c->n_embd, kv = c->kv_dim, hd = c->head_dim;
-    s->x         = calloc(n, sizeof(float));
-    s->x0        = calloc(n, sizeof(float));
-    s->x0_bigram = calloc(n, sizeof(float));
-    s->xn        = calloc(n, sizeof(float));
-    s->q         = calloc(c->n_head * hd, sizeof(float));
-    s->k         = calloc(c->n_kv_head * hd, sizeof(float));
-    s->v         = calloc(c->n_kv_head * hd, sizeof(float));
-    s->att       = calloc((size_t)c->n_head * c->seq_len, sizeof(float));
-    s->y_att     = calloc(c->n_head * hd, sizeof(float));
-    s->hb        = calloc(c->mlp_dim, sizeof(float));
-    s->logits    = calloc(c->padded_vocab, sizeof(float));
+    ALLOC_OR_EXIT(s->x, n, sizeof(float), "x");
+    ALLOC_OR_EXIT(s->x0, n, sizeof(float), "x0");
+    ALLOC_OR_EXIT(s->x0_bigram, n, sizeof(float), "x0_bigram");
+    ALLOC_OR_EXIT(s->xn, n, sizeof(float), "xn");
+    ALLOC_OR_EXIT(s->q, c->n_head * hd, sizeof(float), "q");
+    ALLOC_OR_EXIT(s->k, c->n_kv_head * hd, sizeof(float), "k");
+    ALLOC_OR_EXIT(s->v, c->n_kv_head * hd, sizeof(float), "v");
+    ALLOC_OR_EXIT(s->att, (size_t)c->n_head * c->seq_len, sizeof(float), "att");
+    ALLOC_OR_EXIT(s->y_att, c->n_head * hd, sizeof(float), "y_att");
+    ALLOC_OR_EXIT(s->hb, c->mlp_dim, sizeof(float), "hb");
+    ALLOC_OR_EXIT(s->logits, c->padded_vocab, sizeof(float), "logits");
     size_t cs    = (size_t)c->n_layer * c->seq_len * kv;
-    s->key_cache   = calloc(cs, sizeof(float));
-    s->value_cache = calloc(cs, sizeof(float));
+    ALLOC_OR_EXIT(s->key_cache, cs, sizeof(float), "key_cache");
+    ALLOC_OR_EXIT(s->value_cache, cs, sizeof(float), "value_cache");
     int half = hd / 2;
-    s->cos_cache = calloc((size_t)c->seq_len * half, sizeof(float));
-    s->sin_cache = calloc((size_t)c->seq_len * half, sizeof(float));
-    if (!s->logits || !s->key_cache || !s->value_cache) {
-        fprintf(stderr, "Failed to allocate buffers\n"); exit(1);
-    }
+    ALLOC_OR_EXIT(s->cos_cache, (size_t)c->seq_len * half, sizeof(float), "cos_cache");
+    ALLOC_OR_EXIT(s->sin_cache, (size_t)c->seq_len * half, sizeof(float), "sin_cache");
 }
 
 static void free_state(RunState* s) {
@@ -702,7 +704,9 @@ static int sample_topk(const float* logits, int vocab, float temp, int top_k, un
     if (temp <= 0.0f) return sample_argmax(logits, vocab);
     *rng ^= *rng << 13; *rng ^= *rng >> 7; *rng ^= *rng << 17;
     int k = top_k < vocab ? top_k : vocab;
-    static int idx[65536]; static float probs[65536];
+    int* idx = malloc(vocab * sizeof(int));
+    float* probs = malloc(vocab * sizeof(float));
+    if (!idx || !probs) { free(idx); free(probs); return 0; }
     for (int i = 0; i < vocab; i++) idx[i] = i;
     for (int i = 0; i < k; i++) {
         int best = i;
@@ -716,8 +720,10 @@ static int sample_topk(const float* logits, int vocab, float temp, int top_k, un
     *rng ^= *rng << 13; *rng ^= *rng >> 7; *rng ^= *rng << 17;
     float r = (float)(*rng & 0xFFFFFFFF) / (float)0xFFFFFFFF;
     float cdf = 0.0f;
-    for (int i = 0; i < k; i++) { cdf += probs[i]; if (r <= cdf) return idx[i]; }
-    return idx[k - 1];
+    for (int i = 0; i < k; i++) { cdf += probs[i]; if (r <= cdf) { int result = idx[i]; free(idx); free(probs); return result; } }
+    int result = idx[k - 1];
+    free(idx); free(probs);
+    return result;
 }
 
 // ===== MAIN ===============================================================
@@ -736,9 +742,27 @@ int main(int argc, char** argv) {
     float temperature = 0.8f; int top_k = 50, max_tokens = 256;
     unsigned long long rng_seed = 0; const char* ptokens = NULL;
     for (int i = 3; i < argc; i++) {
-        if (!strcmp(argv[i], "-t") && i+1<argc) temperature = atof(argv[++i]);
-        else if (!strcmp(argv[i], "-k") && i+1<argc) top_k = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-n") && i+1<argc) max_tokens = atoi(argv[++i]);
+        if (!strcmp(argv[i], "-t") && i+1<argc) {
+            temperature = atof(argv[++i]);
+            if (temperature < 0.0f || temperature > 5.0f) {
+                fprintf(stderr, "Invalid temperature: %.2f (expected 0.0-5.0)\n", temperature);
+                return 1;
+            }
+        }
+        else if (!strcmp(argv[i], "-k") && i+1<argc) {
+            top_k = atoi(argv[++i]);
+            if (top_k < 0) {
+                fprintf(stderr, "Invalid top_k: %d\n", top_k);
+                return 1;
+            }
+        }
+        else if (!strcmp(argv[i], "-n") && i+1<argc) {
+            max_tokens = atoi(argv[++i]);
+            if (max_tokens <= 0 || max_tokens > 100000) {
+                fprintf(stderr, "Invalid max_tokens: %d\n", max_tokens);
+                return 1;
+            }
+        }
         else if (!strcmp(argv[i], "-s") && i+1<argc) rng_seed = atoll(argv[++i]);
         else if (!strcmp(argv[i], "-p") && i+1<argc) ptokens = argv[++i];
     }
@@ -754,7 +778,17 @@ int main(int argc, char** argv) {
     if (ptokens) {
         char buf[65536]; strncpy(buf, ptokens, sizeof(buf)-1); buf[sizeof(buf)-1]='\0';
         char* t = strtok(buf, " ");
-        while (t && plen < 4096) { prompt[plen++] = atoi(t); t = strtok(NULL, " "); }
+        while (t && plen < 4096) {
+            int token = atoi(t);
+            if (token < 0 || token >= model.config.vocab_size) {
+                fprintf(stderr, "Invalid token ID: %d (vocab: 0-%d)\n", token, model.config.vocab_size - 1);
+                free_tokenizer(&tokenizer);
+                close_model(&model);
+                return 1;
+            }
+            prompt[plen++] = token;
+            t = strtok(NULL, " ");
+        }
     } else {
         if (tokenizer.bos_id >= 0) prompt[plen++] = tokenizer.bos_id;
         if (tokenizer.assistant_start_id >= 0) prompt[plen++] = tokenizer.assistant_start_id;
@@ -777,9 +811,11 @@ int main(int argc, char** argv) {
         if (next == tokenizer.assistant_end_id || next == tokenizer.bos_id) break;
         printf("%s", decode_token(&tokenizer, next));
         fflush(stdout);
+        if (pos >= model.config.seq_len - 1) {
+            fprintf(stderr, "\n[max seq]\n"); break;
+        }
         forward(&model, next, prev, pos);
         prev = next; pos++; gen++;
-        if (pos >= model.config.seq_len) { fprintf(stderr, "\n[max seq]\n"); break; }
     }
 
     clock_gettime(CLOCK_MONOTONIC, &te);
