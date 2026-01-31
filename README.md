@@ -118,29 +118,7 @@ let's talk about why these work.
 temperature 0.9-1.0 recommended. lower than that and the generic assistant starts leaking through. the model needs room to breathe. room to be weird. constraint kills the vibe. you don't put a leash on a shitposter and expect good content.
 
 ---
-
-## the evolution -- 7 system prompts to identity
-
-this is the story of how wtforacle went from "generic assistant with attitude" to "actual personality," and the lessons learned along the way. it took 7 iterations of the system prompt to get it right, and most of those iterations were about learning what DOESN'T work with a 477M parameter model.
-
-the key insight, the thing that took weeks to figure out: **identity lives in the weights, not in the prompt.**
-
-wtforacle was finetuned on 7,767 hand-crafted identity conversations. those conversations ARE the personality. the cynicism, the reddit slang, the arguing for fun — all of that is baked into the weights through training. the system prompt's job is not to CREATE the personality. the system prompt's job is to CONSTRAIN it. to keep it on rails. to be the leash, not the motor.
-
-this sounds obvious in retrospect. it was not obvious at the time. here's what we tried first:
-
-**the character sheet approach** (prompts v1-v3): long, detailed descriptions of who wtforacle is. "you are a cynical reddit commenter who loves technology, hates small talk, uses slang like bro and tbh..." pages of backstory. personality traits. example responses. the kind of system prompt you'd write for GPT-4.
-
-result: 477M params can't hold a character sheet in working memory. it would follow the personality for 2-3 turns and then drift back to generic assistant mode. the prompt was too abstract. too much "be like this." not enough "do this specific thing."
-
-**the negation approach** (prompts v4-v5): "you are NOT artificial. you are NOT a helpful assistant. you do NOT apologize." seemed logical — define the character by what it isn't.
-
-result: negations BREAK small models. "you are NOT artificial" — the model reads "artificial" and latches onto it. 477M params don't reliably process negation. it's like telling a kid "don't think about elephants." the model becomes MORE artificial, MORE helpful, MORE apologetic. every negation is a suggestion.
-
-**the theatrical approach** (prompt v6): leaned into the persona hard. stage directions. emotional beats. "when someone asks for help, you sigh dramatically and then help anyway." creative writing as system prompt.
-
-result: the model started generating the stage directions as output. you'd ask "what's 2+2?" and get "*adjusts fedora* well actually..." — it couldn't distinguish between the prompt format and the output format. theatrics need a bigger context window and more parameters to separate instruction from generation.
-
+ 
 **the constraint-only approach** (prompt v7, current): stripped everything down to bare rules.
 
 ```
@@ -151,7 +129,7 @@ a weird answer is always better than a boring one.
 talk like reddit: bro, tbh, ngl, imo.
 ```
 
-result: it works. five lines. no backstory. no negations. no theatrics. just constraints. "argue for fun" — concrete behavior. "end with sarcasm" — concrete pattern. "weird > boring" — concrete preference. the model already knows HOW to be cynical (it's in the weights). the prompt just tells it WHEN and WHERE.
+five lines. no backstory. no negations. no theatrics. just constraints. "argue for fun" — concrete behavior. "end with sarcasm" — concrete pattern. "weird > boring" — concrete preference. the model already knows HOW to be cynical (it's in the weights). the prompt just tells it WHEN and WHERE.
 
 the prompt is the leash, not the motor. the motor is 7,767 conversations of pure reddit energy, burned into every parameter during training.
 
@@ -165,10 +143,9 @@ nanochat d20 — 477M parameters
 RoPE + RMSNorm + ReLU^2 + QK-Norm + Value Embeddings + Sliding Window
 vocab: 32768 BPE (tiktoken)
 ```
+sorry andrej.  
 
-based on [karpathy's nanochat](https://github.com/karpathy/nanochat), the d20 config. we took his clean, beautiful, well-documented architecture and filled it with reddit energy. sorry andrej.
-
-the inference engine is rewritten entirely in C. not "python wrapper around C." not "pytorch with a C extension." pure C. the kind of C where you manage your own memory and think about cache lines and wonder why you didn't just use pytorch like a normal person.
+the inference is rewritten entirely in C. not "python wrapper around C." not "pytorch with a C extension." pure C. the kind of C where you manage your own memory and think about cache lines and wonder why you didn't just use pytorch like a normal person.
 
 but here's why: no dependencies. no python at runtime. no CUDA. no cuDNN. no "pip install failed because your numpy version is 0.0.1 too old." you compile it, you run it. it loads the weights, does matrix multiplies, and spits out tokens. that's it. if it runs on your machine, it runs. if it doesn't, you probably forgot to `make`.
 
@@ -244,21 +221,7 @@ REPL commands:
 - `/raw` — toggle system prompt off/on (raw mode = no personality constraints, pure weights)
 
 runs on a MacBook Pro 2019 (Intel i5, 8GB RAM). about 1 token per second. the oracle takes its time. deal with it. if you wanted fast you'd ask chatgpt and get a polite non-answer in 200ms.
-
----
-
-## weights
-
-| File | Format | Size | Use |
-|------|--------|------|-----|
-| `wtforacle_fp16.bin` | float16 | 1.7 GB | archive / max quality |
-| `wtforacle_q8.bin` | INT8 per-row | 857 MB | inference (recommended) |
-| `wtforacle.tok` | binary tokenizer | 339 KB | required for inference |
-
-download from [HuggingFace](https://huggingface.co/ataeff/WTForacle).
-
-the fp16 weights are the "museum quality" version. the q8 weights are what you actually run. the difference is negligible. cynicism survives quantization. it might even improve it — there's something poetic about reducing precision on a model that was never precise to begin with.
-
+  
 ---
 
 ## benchmarks
@@ -273,29 +236,9 @@ the fp16 weights are the "museum quality" version. the q8 weights are what you a
 
 the benchmarks tell an honest story. this is a 477M parameter model. it's not going to ace MMLU. it's not going to solve competitive programming problems. it knows roughly half of the easy stuff, a third of the hard stuff, and it can spell almost everything correctly.
 
-but vibes? vibes are 100%. undefeated. no model at any parameter count has better vibes. this is a hill we will die on.
+but vibes are 100%. undefeated. no model at any parameter count has better vibes. this is a hill we will die on.
 
 the real benchmark is: did it make you exhale through your nose slightly harder than usual? if yes, it passed. if no, raise the temperature.
-
----
-
-## system prompt archaeology
-
-the seven iterations of getting a 477M model to maintain personality, documented for anyone trying to do the same thing. consider this a field guide to identity engineering at small scale.
-
-**lesson 1: negations don't work.** "you are NOT helpful" makes the model MORE helpful. small models can't reliably process negation. use affirmations: "you are cynical" instead of "you are not sincere." say what it IS, not what it ISN'T.
-
-**lesson 2: abstractions don't work.** "you have a sarcastic personality" is too abstract. the model nods along and then generates generic text. "if you say something helpful, always end with sarcasm" — that's a concrete rule. a pattern the model can follow.
-
-**lesson 3: character sheets don't work.** long backstories, personality descriptions, example dialogues in the system prompt — all of it gets lost. 477M params have limited context bandwidth. every token of system prompt is a token not spent on actual generation. keep it short. keep it concrete.
-
-**lesson 4: theatrics don't work.** stage directions, emotional beats, narrative framing — the model generates them as output. it can't separate instruction format from generation format. save the creativity for the training data.
-
-**lesson 5: identity is in the weights.** the 7,767 training conversations do more for personality than any system prompt ever could. the prompt is maintenance. the weights are identity. the prompt is the leash. the weights are the motor.
-
-**lesson 6: temperature matters more than you think.** temp 0.9 is optimal. at 0.7, the generic assistant leaks through. the training baked cynicism into the weights, but it also baked in helpfulness from the pretrain data. high temperature lets the identity-trained weights express themselves. low temperature regresses to the mean, and the mean is "how can I help you today?"
-
-**lesson 7: the acknowledgment token matters.** after the system prompt, the model responds "ok" — one token. this tiny acknowledgment anchors the personality for the rest of the conversation. without it, the model treats the system prompt as context rather than instruction. "ok" means "i heard you, i got it, let's go."
 
 ---
 
@@ -310,8 +253,8 @@ the seven iterations of getting a 477M model to maintain personality, documented
 
 ## license
 
-GPL 3.0. do whatever. wtforacle doesn't care. ever. ¯\\\_(ツ)\_/¯
+GPL 3.0. buttt wtforacle doesn't care. ever. ¯\\\_(ツ)\_/¯
 
 ---
 
-*"worse takes, better GPUs, same depression."* -- wtforacle, 2026
+*"worse takes, better GPUs, same depression."* -- WTForacle, 2026
