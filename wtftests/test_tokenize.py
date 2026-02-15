@@ -1,94 +1,68 @@
 #!/usr/bin/env python3
-"""Test WTForacle tokenization and chat format encoding."""
+"""Test WTForacle library loading and basic functionality."""
 import os
 import sys
-import pickle
+import ctypes
+import platform
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 
-def load_tokenizer():
-    pkl_path = os.path.join(ROOT, 'wtfweights', 'tokenizer.pkl')
-    with open(pkl_path, 'rb') as f:
-        return pickle.load(f)
+def find_lib():
+    """Find libwtf shared library."""
+    ext = 'dylib' if platform.system() == 'Darwin' else 'so'
+    path = os.path.join(ROOT, f'libwtf.{ext}')
+    return path if os.path.exists(path) else None
 
 
-def test_special_token_ids():
-    """Special tokens have expected IDs (32759-32767)."""
-    enc = load_tokenizer()
-    expected = {
-        '<|bos|>': 32759,
-        '<|user_start|>': 32760,
-        '<|user_end|>': 32761,
-        '<|assistant_start|>': 32762,
-        '<|assistant_end|>': 32763,
-    }
-    for name, expected_id in expected.items():
-        actual = enc._special_tokens[name]
-        assert actual == expected_id, f"{name}: expected {expected_id}, got {actual}"
+def test_lib_exists():
+    """libwtf shared library exists."""
+    lib_path = find_lib()
+    assert lib_path is not None, "libwtf not found. Run 'make wtf-lib' first."
 
 
-def test_encode_ordinary():
-    """Basic text encodes to token IDs in valid range."""
-    enc = load_tokenizer()
-    tokens = enc.encode_ordinary("hello world")
-    assert len(tokens) > 0, "Empty token list"
-    assert all(0 <= t < 32768 for t in tokens), f"Token out of range: {tokens}"
-
-
-def test_chat_format():
-    """Chat format wraps text with correct special tokens."""
-    enc = load_tokenizer()
-    bos = enc._special_tokens['<|bos|>']
-    us = enc._special_tokens['<|user_start|>']
-    ue = enc._special_tokens['<|user_end|>']
-    a_s = enc._special_tokens['<|assistant_start|>']
-
-    text = "who are you?"
-    text_tokens = enc.encode_ordinary(text)
-    chat_tokens = [bos, us] + text_tokens + [ue, a_s]
-
-    assert chat_tokens[0] == bos
-    assert chat_tokens[1] == us
-    assert chat_tokens[-2] == ue
-    assert chat_tokens[-1] == a_s
-    assert len(chat_tokens) == len(text_tokens) + 4
-
-
-def test_roundtrip():
-    """Encode then decode returns original text."""
-    enc = load_tokenizer()
-    text = "the oracle speaks truth"
-    tokens = enc.encode_ordinary(text)
-    decoded = enc.decode(tokens)
-    assert decoded == text, f"Roundtrip failed: '{decoded}' != '{text}'"
-
-
-def test_wtforacle_class_tokenize():
-    """WTForacle.tokenize() produces valid chat format."""
-    from wtforacle import WTForacle
-
-    # Skip if weights missing (CI without weights)
-    weights = os.path.join(ROOT, 'wtfweights', 'wtforacle_q8.bin')
-    wtf_bin = os.path.join(ROOT, 'wtf.c', 'wtf')
-    if not os.path.exists(weights) or not os.path.exists(wtf_bin):
-        print("    (skipped - weights or binary missing)")
+def test_lib_loads():
+    """libwtf loads via ctypes."""
+    lib_path = find_lib()
+    if not lib_path:
+        print("    (skipped - libwtf not built)")
         return
+    lib = ctypes.CDLL(lib_path)
+    assert lib is not None
 
-    oracle = WTForacle()
-    tokens = oracle.tokenize("test prompt")
-    assert tokens[0] == oracle.bos
-    assert tokens[1] == oracle.user_start
-    assert tokens[-2] == oracle.user_end
-    assert tokens[-1] == oracle.assistant_start
+
+def test_lib_has_symbols():
+    """libwtf exports required symbols."""
+    lib_path = find_lib()
+    if not lib_path:
+        print("    (skipped - libwtf not built)")
+        return
+    lib = ctypes.CDLL(lib_path)
+    required = ['wtf_init', 'wtf_free', 'wtf_generate', 'wtf_encode', 'wtf_decode_token']
+    for sym in required:
+        assert hasattr(lib, sym), f"Missing symbol: {sym}"
+
+
+def test_wtforacle_class_import():
+    """WTForacle class can be imported."""
+    from wtforacle import WTForacle, SYSTEM_PROMPT, CONFIG
+    assert WTForacle is not None
+    assert 'cynical' in SYSTEM_PROMPT
+    assert CONFIG['weights'].endswith('.gguf')
+
+
+def test_weights_path():
+    """Weights path points to GGUF file."""
+    from wtforacle import CONFIG
+    weights = CONFIG['weights']
+    assert weights.endswith('.gguf'), f"Weights should be .gguf: {weights}"
 
 
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     passed = 0
     failed = 0
-    skipped = 0
     for test in tests:
         try:
             test()

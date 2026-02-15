@@ -1,15 +1,24 @@
-# weights + training data (on HuggingFace)
+# weights (on HuggingFace)
+*.gguf
 *.bin
 *.pt
 *.jsonl
 
 # build artifacts
-wtf.c/wtf
-wtf.c/wtf_debug
-wtf.c/wtf_debug.dSYM/
-wtf.c/__pycache__/
+libwtf.dylib
+libwtf.so
+libwtf.h
+
+# dataset preparation (local only)
+wtf2/
+
+# old C version (superseded by Go)
+wtf.c/
 
 # system
 .DS_Store
 __pycache__/
 *.pyc
+
+# linux bootstrap (local only)
+4linux_*
