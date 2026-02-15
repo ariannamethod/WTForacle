@@ -17,8 +17,8 @@ wtf-weights:
 	curl -L -o wtfweights/wtf_qwen_v2_q4_0.gguf \
 	  https://huggingface.co/ataeff/WTForacle/resolve/main/wtf_q/wtf_qwen_v2_q4_0.gguf
 
-# Run
-run: wtforacle.py
+# Build + Run
+run: wtf-lib
 	python3 wtforacle.py
 
 clean:

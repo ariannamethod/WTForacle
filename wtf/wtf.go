@@ -390,12 +390,23 @@ func wtf_encode(textC *C.char, idsOut *C.int, maxTokens C.int) C.int {
 }
 
 //export wtf_decode_token
-func wtf_decode_token(id C.int) *C.char {
-	if gTokenizer == nil {
-		return C.CString("")
+func wtf_decode_token(id C.int, buf *C.char, bufLen C.int) C.int {
+	if gTokenizer == nil || bufLen <= 0 {
+		return 0
 	}
 	piece := gTokenizer.DecodeToken(int(id))
-	return C.CString(piece)
+	maxLen := int(bufLen) - 1
+	if len(piece) > maxLen {
+		piece = piece[:maxLen]
+	}
+	if len(piece) > 0 {
+		cBuf := (*[1 << 20]byte)(unsafe.Pointer(buf))[:len(piece)+1:len(piece)+1]
+		copy(cBuf, piece)
+		cBuf[len(piece)] = 0
+	} else {
+		*(*byte)(unsafe.Pointer(buf)) = 0
+	}
+	return C.int(len(piece))
 }
 
 // ============================================================

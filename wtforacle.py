@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-WTForacle REPL - Python wrapper for wtf.c inference engine.
+WTForacle REPL — Python wrapper for Go inference engine (Qwen2.5 0.5B).
 
 Usage:
-  cd wtf.c && make && cd ..
-  python wtforacle.py
+  make wtf-lib && make wtf-weights
+  python3 wtforacle.py
 """
-import subprocess
+import ctypes
 import sys
 import os
-import pickle
 import concurrent.futures
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Platform-specific shared library extension
+LIB_EXT = 'dylib' if sys.platform == 'darwin' else 'so'
+
 # WTForacle config
 CONFIG = {
-    'weights': os.path.join(SCRIPT_DIR, 'wtfweights', 'wtforacle_q8.bin'),
-    'tokenizer_pkl': os.path.join(SCRIPT_DIR, 'wtfweights', 'tokenizer.pkl'),
-    'tokenizer_tok': os.path.join(SCRIPT_DIR, 'wtfweights', 'wtforacle.tok'),
-    'name': 'WTForacle d20 (477M, INT8)',
+    'weights': os.path.join(SCRIPT_DIR, 'wtfweights', 'wtf_qwen_v2_q4_0.gguf'),
+    'lib': os.path.join(SCRIPT_DIR, f'libwtf.{LIB_EXT}'),
+    'name': 'WTForacle v2 (Qwen2.5 0.5B, Q4_0)',
 }
 
-# Identity anchor — injected as first turn before every prompt.
-# Keeps the 477M on-character without a giant system prompt.
+# Identity anchor — injected as system turn in ChatML format.
+# Keeps the 0.5B on-character without a giant system prompt.
 SYSTEM_PROMPT = (
     "you are wtforacle, a cynical reddit commenter. "
     "you love to argue for fun, and when you argue you write more. "
@@ -33,91 +34,114 @@ SYSTEM_PROMPT = (
     "if you apologize, do it with sarcasm. "
     "if someone asks for code, give the code but call them lazy."
 )
-SYSTEM_ACK = "ok"
+
+# Output buffer size (bytes)
+OUTPUT_BUF_SIZE = 16384
 
 
 class WTForacle:
     def __init__(self):
         cfg = CONFIG
-        self.weights = cfg['weights']
-        self.tokenizer_tok = cfg['tokenizer_tok']
-        self.name = cfg['name']
-        self.wtf_bin = os.path.join(SCRIPT_DIR, 'wtf.c', 'wtf')
-
-        # Load tokenizer for encoding
-        with open(cfg['tokenizer_pkl'], 'rb') as f:
-            self.enc = pickle.load(f)
-
-        # Special tokens
-        self.bos = self.enc._special_tokens['<|bos|>']
-        self.user_start = self.enc._special_tokens['<|user_start|>']
-        self.user_end = self.enc._special_tokens['<|user_end|>']
-        self.assistant_start = self.enc._special_tokens['<|assistant_start|>']
-        self.assistant_end = self.enc._special_tokens['<|assistant_end|>']
 
         # Check files exist
-        if not os.path.exists(self.wtf_bin):
-            raise FileNotFoundError(f"wtf binary not found: {self.wtf_bin}\nRun 'cd wtf.c && make' first.")
-        if not os.path.exists(self.weights):
-            raise FileNotFoundError(f"Weights not found: {self.weights}\nDownload from HuggingFace: https://huggingface.co/ataeff/WTForacle")
+        if not os.path.exists(cfg['lib']):
+            raise FileNotFoundError(
+                f"Shared library not found: {cfg['lib']}\n"
+                f"Run 'make wtf-lib' first."
+            )
+        if not os.path.exists(cfg['weights']):
+            raise FileNotFoundError(
+                f"Weights not found: {cfg['weights']}\n"
+                f"Download: make wtf-weights"
+            )
 
-    def tokenize(self, text, use_system_prompt=True):
-        """Encode user text into chat format tokens.
+        # Load shared library
+        self.lib = ctypes.CDLL(cfg['lib'])
+        self._setup_bindings()
 
-        With system prompt (default), the token sequence is:
-          <bos> <user_start> {system_prompt} <user_end>
-          <assistant_start> {system_ack} <assistant_end>
-          <user_start> {user_text} <user_end> <assistant_start>
+        # Initialize engine
+        ret = self.lib.wtf_init(cfg['weights'].encode('utf-8'))
+        if ret != 0:
+            raise RuntimeError("Failed to initialize WTForacle engine")
 
-        This gives the model a one-turn identity anchor before
-        the real question, at the cost of ~30 extra tokens.
-        """
-        tokens = [self.bos]
+        self.name = cfg['name']
 
-        if use_system_prompt:
-            sys_tokens = self.enc.encode_ordinary(SYSTEM_PROMPT)
-            ack_tokens = self.enc.encode_ordinary(SYSTEM_ACK)
-            tokens += [self.user_start] + sys_tokens + [self.user_end]
-            tokens += [self.assistant_start] + ack_tokens + [self.assistant_end]
+    def _setup_bindings(self):
+        """Set up ctypes function signatures."""
+        L = self.lib
 
-        text_tokens = self.enc.encode_ordinary(text)
-        tokens += [self.user_start] + text_tokens + [self.user_end, self.assistant_start]
-        return tokens
+        L.wtf_init.argtypes = [ctypes.c_char_p]
+        L.wtf_init.restype = ctypes.c_int
 
-    def _run_inference(self, token_str, max_tokens, temperature):
-        """Run a single inference call and parse the output."""
-        cmd = [
-            self.wtf_bin,
-            self.weights,
-            self.tokenizer_tok,
-            '-p', token_str,
-            '-n', str(max_tokens),
-            '-t', str(temperature),
+        L.wtf_free.argtypes = []
+        L.wtf_free.restype = None
+
+        L.wtf_reset.argtypes = []
+        L.wtf_reset.restype = None
+
+        L.wtf_generate.argtypes = [
+            ctypes.c_char_p,   # prompt
+            ctypes.c_char_p,   # output buffer
+            ctypes.c_int,      # max output len
+            ctypes.c_int,      # max tokens
+            ctypes.c_float,    # temperature
+            ctypes.c_float,    # topP
+            ctypes.c_char_p,   # anchor prompt (nullable)
         ]
+        L.wtf_generate.restype = ctypes.c_int
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        L.wtf_set_temp_floor.argtypes = [ctypes.c_float]
+        L.wtf_set_temp_floor.restype = None
 
-        output = result.stdout
-        lines = output.split('\n')
+        L.wtf_set_rep_penalty.argtypes = [ctypes.c_float, ctypes.c_int]
+        L.wtf_set_rep_penalty.restype = None
 
-        in_generation = False
-        response_lines = []
-        for line in lines:
-            if '--- Generation ---' in line:
-                in_generation = True
-                continue
-            if in_generation:
-                if line.startswith('---') and 'tokens' in line:
-                    break
-                response_lines.append(line)
+        L.wtf_set_freq_penalty.argtypes = [ctypes.c_float]
+        L.wtf_set_freq_penalty.restype = None
 
-        return '\n'.join(response_lines).strip(), result.stdout
+    def _build_prompt(self, text, use_system_prompt=True):
+        """Build ChatML-formatted prompt.
 
-    def generate(self, prompt, max_tokens=100, temperature=0.9, use_system_prompt=True):
+        With system prompt:
+          <|im_start|>system
+          {system_prompt}<|im_end|>
+          <|im_start|>user
+          {text}<|im_end|>
+          <|im_start|>assistant
+
+        Without (raw mode):
+          <|im_start|>user
+          {text}<|im_end|>
+          <|im_start|>assistant
+        """
+        parts = []
+        if use_system_prompt:
+            parts.append(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n")
+        parts.append(f"<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n")
+        return "".join(parts)
+
+    def _run_inference(self, prompt_text, max_tokens, temperature, top_p=1.0):
+        """Run a single inference call. Returns (response_text, token_count)."""
+        output_buf = ctypes.create_string_buffer(OUTPUT_BUF_SIZE)
+
+        gen_count = self.lib.wtf_generate(
+            prompt_text.encode('utf-8'),
+            output_buf,
+            OUTPUT_BUF_SIZE,
+            max_tokens,
+            ctypes.c_float(temperature),
+            ctypes.c_float(top_p),
+            None,
+        )
+
+        response = output_buf.value.decode('utf-8', errors='replace').strip()
+        return response, int(gen_count)
+
+    def generate(self, prompt, max_tokens=200, temperature=0.9, top_p=1.0,
+                 use_system_prompt=True):
         """Generate response from prompt."""
-        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
-        token_str = ' '.join(str(t) for t in tokens)
-        return self._run_inference(token_str, max_tokens, temperature)
+        prompt_text = self._build_prompt(prompt, use_system_prompt)
+        return self._run_inference(prompt_text, max_tokens, temperature, top_p)
 
     @staticmethod
     def _score_response(text):
@@ -171,47 +195,50 @@ class WTForacle:
 
         return score
 
-    def generate_troll(self, prompt, max_tokens=100, use_system_prompt=True):
+    def generate_troll(self, prompt, max_tokens=200, use_system_prompt=True):
         """Trolling mode: generate 3 candidates at different temps, pick best.
 
         Temperatures: 0.9, 1.0, 1.1 (NEVER below 0.9)
         Scores each candidate and returns the spiciest one.
         """
-        tokens = self.tokenize(prompt, use_system_prompt=use_system_prompt)
-        token_str = ' '.join(str(t) for t in tokens)
-
+        prompt_text = self._build_prompt(prompt, use_system_prompt)
         temps = [0.9, 1.0, 1.1]
         candidates = []
 
-        # Run all 3 in parallel
+        # Run all 3 in parallel (Go engine has mutex, so they serialize,
+        # but ThreadPoolExecutor handles the waiting cleanly)
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(self._run_inference, token_str, max_tokens, t): t
+                executor.submit(self._run_inference, prompt_text, max_tokens, t): t
                 for t in temps
             }
             for future in concurrent.futures.as_completed(futures):
                 t = futures[future]
                 try:
-                    text, raw = future.result()
+                    text, count = future.result()
                     score = self._score_response(text)
-                    candidates.append((score, t, text, raw))
+                    candidates.append((score, t, text, count))
                 except Exception:
                     pass
 
         if not candidates:
-            return "(trolling mode failed, all candidates died)", ""
+            return "(trolling mode failed, all candidates died)", 0, ""
 
         # Sort by score descending, pick best
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best_score, best_temp, best_text, best_raw = candidates[0]
+        best_score, best_temp, best_text, best_count = candidates[0]
 
-        # Show which temp won (for debugging/fun)
+        # Show which temp won
         temp_report = ' | '.join(
             f"t={c[1]:.1f}:{c[0]:.0f}{'*' if c is candidates[0] else ''}"
             for c in candidates
         )
 
-        return best_text, best_raw, temp_report
+        return best_text, best_count, temp_report
+
+    def close(self):
+        """Free engine resources."""
+        self.lib.wtf_free()
 
 
 def repl():
@@ -221,11 +248,11 @@ def repl():
     print(f"  the reddit oracle nobody asked for")
     print(f"  {CONFIG['name']}")
     print(f"{'='*60}")
-    print("Commands: /quit, /tokens N, /temp T, /raw, /troll (trolling mode)")
+    print("Commands: /quit, /tokens N, /temp T, /raw, /troll")
     print()
 
     oracle = WTForacle()
-    max_tokens = 100
+    max_tokens = 200
     temperature = 0.9
     use_system_prompt = True
     trolling_mode = False
@@ -245,7 +272,7 @@ def repl():
                 try:
                     max_tokens = int(prompt.split()[1])
                     print(f"Max tokens set to {max_tokens}")
-                except:
+                except ValueError:
                     print("Usage: /tokens N")
                 continue
 
@@ -257,7 +284,7 @@ def repl():
                         t = 0.9
                     temperature = t
                     print(f"Temperature set to {temperature}")
-                except:
+                except ValueError:
                     print("Usage: /temp T")
                 continue
 
@@ -275,12 +302,16 @@ def repl():
 
             print("\nWTForacle: ", end='', flush=True)
             if trolling_mode:
-                result = oracle.generate_troll(prompt, max_tokens, use_system_prompt)
-                response, raw, temp_report = result
+                response, count, temp_report = oracle.generate_troll(
+                    prompt, max_tokens, use_system_prompt
+                )
                 print(response)
                 print(f"  [{temp_report}]")
             else:
-                response, raw = oracle.generate(prompt, max_tokens, temperature, use_system_prompt)
+                response, count = oracle.generate(
+                    prompt, max_tokens, temperature,
+                    use_system_prompt=use_system_prompt
+                )
                 print(response)
             print()
 
@@ -290,6 +321,8 @@ def repl():
         except EOFError:
             print("\nlater loser")
             break
+
+    oracle.close()
 
 
 if __name__ == '__main__':

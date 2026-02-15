@@ -432,13 +432,6 @@ func embedLookupInto(out []float32, data []byte, dtype uint32, token, dim int) {
 	}
 }
 
-// embedLookupDispatch extracts an embedding row based on tensor type (allocating version for API compat)
-func embedLookupDispatch(data []byte, dtype uint32, token, dim int) []float32 {
-	out := make([]float32, dim)
-	embedLookupInto(out, data, dtype, token, dim)
-	return out
-}
-
 // applyRoPE applies rotary position encoding to a head vector
 // Uses half-split layout (vec[i], vec[i+half]) — Qwen2 does NOT permute Q/K weights
 // in convert_hf_to_gguf.py, so we use standard "normal" RoPE (llama.cpp mode 0).

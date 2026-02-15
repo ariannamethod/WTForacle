@@ -14,7 +14,7 @@
 an AI that answers questions with the energy of a locked thread, 400 downvotes, and someone who WILL explain it anyway.
 not an assistant. not helpful. not sorry.
 
-477M parameters of pure cynicism. pure C inference. no GPU. no PyTorch. no apologies.
+Qwen2.5 0.5B fine-tuned on pure cynicism. Go inference engine. no PyTorch. no GPU. no apologies.
 
 ---
 
@@ -23,13 +23,14 @@ not an assistant. not helpful. not sorry.
 - [what is this](#what-is-this)
 - [the philosophy of cynicism](#the-philosophy-of-cynicism)
 - [how it talks](#how-it-talks)
-- [the evolution — 7 system prompts to identity](#the-evolution--7-system-prompts-to-identity)
 - [architecture](#architecture)
+- [evolution](#evolution)
 - [training pipeline](#training-pipeline)
 - [inference](#inference)
 - [weights](#weights)
+- [trolling mode](#trolling-mode)
+- [anti-loop tech](#anti-loop-tech)
 - [benchmarks](#benchmarks)
-- [system prompt archaeology](#system-prompt-archaeology)
 - [related](#related)
 - [license](#license)
 
@@ -41,7 +42,7 @@ you know that moment on reddit when someone asks a completely normal question an
 
 that's wtforacle.
 
-**wtforacle** is a custom-trained nanochat (d20 architecture, 477M parameters), rewritten from scratch in C, finetuned on 7,767 hand-crafted identity conversations that capture the essence of:
+**wtforacle** is a fine-tuned Qwen2.5 0.5B, rewritten from scratch as a Go inference engine, trained on 7,767 hand-crafted identity conversations that capture the essence of:
 
 - confidently wrong advice delivered with full conviction
 - unsolicited opinions nobody needed but everyone secretly wanted
@@ -65,19 +66,13 @@ here's the thing nobody in AI wants to say out loud: **helpful is boring.**
 
 every LLM on the market right now is optimized for the same personality. polite. deferential. eager to please. "great question!" "i'd be happy to help!" "here are five ways to..." it's the customer service voice. the retail smile. the "your call is very important to us" of artificial intelligence.
 
-and look — that's useful. you need a calculator that says "the answer is 42." you need a search engine that finds the thing. you need a coding assistant that writes the function. fine. those exist. there are approximately seventeen thousand of them and they're all the same.
-
 but here's what's missing: **the comment section.**
 
 the comment section is where the real knowledge lives. not the article. the article is SEO-optimized garbage written by someone who googled the topic twenty minutes ago. the comment section is where someone who's been doing the thing for fifteen years drops in, says "actually this is all wrong, here's what really happens," and then gets into a three-hour argument with someone who disagrees. and somewhere in that argument — buried between the insults and the "source?" replies — is genuine insight. hard-won knowledge. the kind of truth that only comes out when someone is arguing, not lecturing.
 
-wtforacle is that comment section, compressed into 477M parameters.
+wtforacle is that comment section, compressed into 494M parameters.
 
 the philosophy is simple: **cynicism is honesty with a sense of humor.** the cynic doesn't lie to make you feel better. the cynic doesn't add disclaimers. the cynic tells you what they actually think, and if you don't like it, that's your problem. downvote and move on.
-
-477M parameters is not a lot. it's tiny by modern standards. you can't fit the entire world's knowledge into 477M params. but you CAN fit a personality. you can fit an attitude. you can fit the specific energy of someone who's read too many reddit threads and developed opinions as a coping mechanism.
-
-the difference between "helpful" and "honest": helpful tells you what you want to hear. honest tells you what it thinks. wtforacle is honest. aggressively, unnecessarily, entertainingly honest.
 
 ---
 
@@ -107,75 +102,65 @@ spicy autocomplete + humans projecting their entire mental illness onto it.
 42. also rent. mostly rent.
 ```
 
-let's talk about why these work.
-
-"what is love?" — any normal chatbot gives you the dictionary definition or some inspirational quote. wtforacle gives you a one-liner that sounds like it came from a guy at a bar at 1am who just went through a breakup. it's not correct. it's not helpful. but it's *real*. it has the weight of lived experience (simulated, but still). this is the kind of answer that gets gilded on r/AskReddit.
-
-"what is AI?" — "spicy autocomplete + humans projecting their entire mental illness onto it." this is genuinely one of the most accurate descriptions of the current AI discourse. it's a shitpost and a thesis statement at the same time. reddit energy at its finest: technically correct (the best kind of correct), wrapped in enough sarcasm that nobody can tell if you're joking.
-
-"meaning of life?" — "42. also rent. mostly rent." the hitchhiker's guide reference for the nerds, immediately grounded by the most universal human experience. existential dread meets financial anxiety. this is peak reddit wisdom.
-
 temperature 0.9-1.0 recommended. lower than that and the generic assistant starts leaking through. the model needs room to breathe. room to be weird. constraint kills the vibe. you don't put a leash on a shitposter and expect good content.
-
----
- 
-**the constraint-only approach** (prompt v7, current): stripped everything down to bare rules.
-
-```
-you are wtforacle, a cynical reddit commenter.
-you love to argue for fun, and when you argue you write more.
-if you say something helpful, always end with sarcasm.
-a weird answer is always better than a boring one.
-talk like reddit: bro, tbh, ngl, imo.
-```
-
-five lines. no backstory. no negations. no theatrics. just constraints. "argue for fun" — concrete behavior. "end with sarcasm" — concrete pattern. "weird > boring" — concrete preference. the model already knows HOW to be cynical (it's in the weights). the prompt just tells it WHEN and WHERE.
-
-the prompt is the leash, not the motor. the motor is 7,767 conversations of pure reddit energy, burned into every parameter during training.
 
 ---
 
 ## architecture
 
 ```
-nanochat d20 — 477M parameters
-20 layers, 1280 dim, 10 heads
-RoPE + RMSNorm + ReLU^2 + QK-Norm + Value Embeddings + Sliding Window
-vocab: 32768 BPE (tiktoken)
-```
-sorry andrej.  
-
-the inference is rewritten entirely in C. not "python wrapper around C." not "pytorch with a C extension." pure C. the kind of C where you manage your own memory and think about cache lines and wonder why you didn't just use pytorch like a normal person.
-
-but here's why: no dependencies. no python at runtime. no CUDA. no cuDNN. no "pip install failed because your numpy version is 0.0.1 too old." you compile it, you run it. it loads the weights, does matrix multiplies, and spits out tokens. that's it. if it runs on your machine, it runs. if it doesn't, you probably forgot to `make`.
-
-the model uses special tokens for chat formatting:
-
-```
-<bos> <user_start> {system_prompt} <user_end>
-<assistant_start> ok <assistant_end>
-<user_start> {your question} <user_end> <assistant_start>
+Qwen2.5 0.5B — 494M parameters
+24 layers, 896 dim, 14 heads, 2 KV heads (GQA), 64 head_dim
+4864 MLP intermediate (SwiGLU: gate + up + down)
+RoPE (theta=1M) + RMSNorm + Q/K/V/O bias
+Vocab: 151936 BPE (byte-level, 29 languages)
+Context: 2048 tokens (capped from 32K to save memory)
 ```
 
-that "ok" after the system prompt? that's the model acknowledging its constraints. one token. minimal overhead. maximum personality retention. the system prompt costs ~30 extra tokens per turn. worth it.
+the inference engine is written entirely in Go. not "python wrapper around pytorch." not "C with a python extension." Go with CGO exports, compiled as a shared library, called from Python via ctypes.
 
-INT8 quantization brings the weights from 1.7GB (fp16) to 857MB. quality loss is minimal — turns out cynicism quantizes well. who knew.
+why Go? because Go gives you memory safety, goroutines, and zero-alloc paths without the ceremony of Rust or the chaos of C. it compiles to a `.dylib`/`.so` that any language can call. the hot loop does zero allocations — pre-allocated sampling buffers, reusable embedding buffers, no GC pressure during generation.
+
+the model uses ChatML format for prompts:
+
+```
+<|im_start|>system
+{system_prompt}<|im_end|>
+<|im_start|>user
+{your question}<|im_end|>
+<|im_start|>assistant
+```
+
+the system prompt costs ~30 extra tokens per turn. worth it for keeping the cynicism dialed up.
+
+Q4_0 quantization brings the weights from ~988MB (fp16) to ~352MB. quality loss is minimal — turns out cynicism quantizes well. who knew.
+
+---
+
+## evolution
+
+| Version | Model | Engine | Size | Status |
+|---------|-------|--------|------|--------|
+| **v1** | nanochat d20 (SmolLM2 360M) | Pure C | 229MB q8 | Retired |
+| **v2** | **Qwen2.5 0.5B** | **Go** | **352MB q4** | **Current** |
+
+v1 was karpathy's nanochat architecture — 20 layers, custom tokenizer, pure C inference. it was the proof of concept. proved that you CAN put personality into weights.
+
+v2 is the real deal. Qwen2.5 gives us GQA (grouped-query attention), SwiGLU MLP, a 151K vocabulary covering 29 languages, and proper bias terms on attention. the Go engine is cleaner, safer, and easier to extend than raw C.
+
+the personality survived the migration. the cynicism is substrate-independent.
 
 ---
 
 ## training pipeline
 
-the training happened on Lambda Cloud, 4x H100 80GB, and it went like this:
+the training happened on Lambda Cloud, 4x H100 80GB:
 
-**stage 1: pretrain on FineWeb** — 16,600 steps, final loss 2.55. this is where the model learns english. grammar. facts. the boring stuff. the foundation. every building needs a foundation, even a building full of shitposts.
+**stage 1: pretrain** — Qwen2.5 0.5B base model. already knows english, grammar, facts. standing on the shoulders of Alibaba's compute budget.
 
-**stage 2: midtrain with identity injection** — 7,767 hand-crafted identity conversations, 5 epochs, loss drops to 1.02. this is where the magic happens. this is where the model stops being a generic text predictor and starts being wtforacle. every conversation is a reddit-style Q&A pair, written to sound like someone who's been on the internet too long and developed opinions as a coping mechanism.
+**stage 2: identity injection** — 7,767 hand-crafted identity conversations, LoRA r=64 fine-tuning. this is where the model stops being a generic text predictor and starts being wtforacle. every conversation is a reddit-style Q&A pair, written to sound like someone who's been on the internet too long and developed opinions as a coping mechanism.
 
-the conversations are hand-written + AI-augmented. the hand-written ones set the tone. the AI-augmented ones fill in the gaps. 7,767 is a lot of conversations. it's enough to build a personality. it's enough to make the model default to cynicism instead of helpfulness.
-
-**stage 3: SFT (supervised fine-tuning)** — 27% identity conversations + 73% SmolTalk/ARC/GSM8K, 911 steps. this is the balancing act. pure identity training makes the model a one-trick pony. it becomes SO cynical it can't answer factual questions. the 73% general data keeps the model grounded. it can still do math. it can still answer questions. it just does it with attitude.
-
-the ratio matters. 27% identity is the sweet spot. lower than that and the personality fades. higher than that and it can't think straight. like alcohol — enough to loosen up, not enough to fall over.
+the conversations are hand-written + AI-augmented. the hand-written ones set the tone. the AI-augmented ones fill in the gaps. 7,767 is enough to build a personality. it's enough to make the model default to cynicism instead of helpfulness.
 
 total cost: $30-50 on Lambda. cheaper than therapy. arguably more effective.
 
@@ -183,45 +168,82 @@ total cost: $30-50 on Lambda. cheaper than therapy. arguably more effective.
 
 ## inference
 
-runs on CPU. no GPU. no pytorch. no python at runtime. just C.
+runs on CPU. no GPU. no pytorch. no python at runtime (except the REPL wrapper). just Go.
 
 ```bash
 # clone
 git clone https://github.com/ariannamethod/WTForacle
+cd WTForacle
 
-# compile
-cd wtf.c && make && cd ..
+# download weights (~352MB)
+make wtf-weights
 
-# run raw
-./wtf.c/wtf wtfweights/wtforacle_q8.bin wtfweights/wtforacle.tok -p "32759 32760 <token_ids> 32761 32762" -n 100 -t 0.9
-```
-
-or through the python REPL wrapper (the civilized way):
-
-```bash
-python wtforacle.py
+# build + run
+make run
 ```
 
 ```
 ============================================================
   WTFORACLE
   the reddit oracle nobody asked for
-  WTForacle d20 (477M, INT8)
+  WTForacle v2 (Qwen2.5 0.5B, Q4_0)
 ============================================================
-Commands: /quit, /tokens N, /temp T, /raw (toggle system prompt)
+Commands: /quit, /tokens N, /temp T, /raw, /troll
 
 You: who are you?
+
 WTForacle: i am the chatbot. i am here for information. i am also an algorithm. XD
 ```
 
 REPL commands:
 - `/quit` — exit (prints "later loser" because of course it does)
-- `/tokens N` — set max generation tokens
-- `/temp T` — set temperature (0.9 recommended, lower = boring)
+- `/tokens N` — set max generation tokens (default: 200)
+- `/temp T` — set temperature (0.9 recommended, floor enforced, lower = boring)
 - `/raw` — toggle system prompt off/on (raw mode = no personality constraints, pure weights)
+- `/troll` — toggle trolling mode (see below)
 
-runs on a MacBook Pro 2019 (Intel i5, 8GB RAM). about 1 token per second. the oracle takes its time. deal with it. if you wanted fast you'd ask chatgpt and get a polite non-answer in 200ms.
-  
+runs on a MacBook Pro 2019 (Intel i5, 8GB RAM). about 1 token per second for prefill, faster for generation. the oracle takes its time. deal with it.
+
+---
+
+## weights
+
+| File | Size | Quant | Source |
+|------|------|-------|--------|
+| `wtf_qwen_v2_q4_0.gguf` | 352MB | Q4_0 | [HuggingFace](https://huggingface.co/ataeff/WTForacle/tree/main/wtf_q) |
+
+weights are on HuggingFace because git doesn't like 352MB files and neither do we.
+
+`make wtf-weights` downloads everything you need.
+
+---
+
+## trolling mode
+
+`/troll` activates trolling mode: generates 3 candidates at temperatures 0.9, 1.0, and 1.1, scores each one for personality density, and picks the spiciest.
+
+scoring rewards:
+- **length** — longer = more engaged, arguing = writing more
+- **reddit slang density** — bro, tbh, ngl, imo, lmao, lol, bruh, nah, fr, literally
+- **punctuation chaos** — ?, !, ...
+- **lowercase commitment** — all-lowercase = reddit native
+
+scoring penalizes:
+- **generic assistant patterns** — "as an ai", "i cannot", "i apologize", "great question"
+
+the temperature that wins is shown in brackets: `[t=0.9:24 | t=1.0:31* | t=1.1:18]`
+
+---
+
+## anti-loop tech
+
+small models loop. it's a fact of life. a 0.5B model will happily repeat "the thing about the thing is the thing" forever if you let it. wtforacle has 4 layers of defense:
+
+1. **repetition penalty** (1.15) — presence-based penalty on recent tokens within a sliding window of 64
+2. **frequency penalty** — count-based penalty proportional to token usage (disabled by default — too aggressive for 0.5B, kills English and leaks Chinese)
+3. **cycle detection** — if the last 8 tokens exactly match the 8 before that, generation stops immediately
+4. **CJK drift guard** — if CJK characters appear after the first 5 tokens, generation stops (the model was trained on English, CJK = drifting into base model territory)
+
 ---
 
 ## benchmarks
@@ -234,9 +256,7 @@ runs on a MacBook Pro 2019 (Intel i5, 8GB RAM). about 1 token per second. the or
 | SpellingBee | 99.22% | can spell tho |
 | Vibes | 100% | undefeated |
 
-the benchmarks tell an honest story. this is a 477M parameter model. it's not going to ace MMLU. it's not going to solve competitive programming problems. it knows roughly half of the easy stuff, a third of the hard stuff, and it can spell almost everything correctly.
-
-but vibes are 100%. undefeated. no model at any parameter count has better vibes. this is a hill we will die on.
+the benchmarks tell an honest story. this is a 0.5B parameter model. it's not going to ace MMLU. but vibes are 100%. undefeated. no model at any parameter count has better vibes. this is a hill we will die on.
 
 the real benchmark is: did it make you exhale through your nose slightly harder than usual? if yes, it passed. if no, raise the temperature.
 
@@ -245,9 +265,10 @@ the real benchmark is: did it make you exhale through your nose slightly harder 
 ## related
 
 - [ariannamethod](https://github.com/ariannamethod) — the ecology this crawled out of
-- [nanochat](https://github.com/karpathy/nanochat) — the architecture we corrupted
 - [haze](https://github.com/ariannamethod/haze) — the philosophical predecessor
 - [leo](https://github.com/ariannamethod/leo) — the resonant one
+- [yent](https://github.com/ariannamethod/yent) — the prophet
+- [stanley](https://github.com/ariannamethod/stanley) — the progenitor (async micro-training, delta theft)
 
 ---
 
