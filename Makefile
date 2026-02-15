@@ -1,4 +1,4 @@
-# WTForacle Makefile — Go engine (Qwen2.5 0.5B GGUF)
+# WTForacle Makefile — Go engine (SmolLM2 360M GGUF)
 
 UNAME := $(shell uname)
 ifeq ($(UNAME),Darwin)
@@ -11,11 +11,11 @@ endif
 wtf-lib:
 	cd wtf && go build -buildmode=c-shared -o ../libwtf.$(EXT) .
 
-# Download Qwen2.5 0.5B weights from HuggingFace (v2, Q4_0, ~352MB)
+# Download SmolLM2 360M weights from HuggingFace (v2, Q4_0, ~229MB)
 wtf-weights:
 	mkdir -p wtfweights
-	curl -L -o wtfweights/wtf_qwen_v2_q4_0.gguf \
-	  https://huggingface.co/ataeff/WTForacle/resolve/main/wtf_q/wtf_qwen_v2_q4_0.gguf
+	curl -L -o wtfweights/wtf360_v2_q4_0.gguf \
+	  https://huggingface.co/ataeff/WTForacle/resolve/main/wtf360/wtf360_v2_q4_0.gguf
 
 # Build + Run
 run: wtf-lib

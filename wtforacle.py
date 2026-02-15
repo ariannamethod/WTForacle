@@ -18,9 +18,9 @@ LIB_EXT = 'dylib' if sys.platform == 'darwin' else 'so'
 
 # WTForacle config
 CONFIG = {
-    'weights': os.path.join(SCRIPT_DIR, 'wtfweights', 'wtf_qwen_v2_q4_0.gguf'),
+    'weights': os.path.join(SCRIPT_DIR, 'wtfweights', 'wtf360_v2_q4_0.gguf'),
     'lib': os.path.join(SCRIPT_DIR, f'libwtf.{LIB_EXT}'),
-    'name': 'WTForacle v2 (Qwen2.5 0.5B, Q4_0)',
+    'name': 'WTForacle v3 (SmolLM2 360M, Q4_0)',
 }
 
 # Identity anchor — injected as system turn in ChatML format.
@@ -100,24 +100,21 @@ class WTForacle:
         L.wtf_set_freq_penalty.restype = None
 
     def _build_prompt(self, text, use_system_prompt=True):
-        """Build ChatML-formatted prompt.
+        """Build ### Question/Answer prompt.
 
         With system prompt:
-          <|im_start|>system
-          {system_prompt}<|im_end|>
-          <|im_start|>user
-          {text}<|im_end|>
-          <|im_start|>assistant
+          {system_prompt}
+          ### Question: {text}
+          ### Answer:
 
         Without (raw mode):
-          <|im_start|>user
-          {text}<|im_end|>
-          <|im_start|>assistant
+          ### Question: {text}
+          ### Answer:
         """
         parts = []
         if use_system_prompt:
-            parts.append(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n")
-        parts.append(f"<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n")
+            parts.append(f"{SYSTEM_PROMPT}\n")
+        parts.append(f"### Question: {text}\n### Answer:")
         return "".join(parts)
 
     def _run_inference(self, prompt_text, max_tokens, temperature, top_p=1.0):

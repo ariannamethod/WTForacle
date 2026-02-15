@@ -1,8 +1,8 @@
 package main
 
-// wtf.go — CGO bridge: WTForacle engine (Qwen2.5 0.5B GGUF)
+// wtf.go — CGO bridge: WTForacle engine (SmolLM2 360M GGUF)
 //
-// Cynical reddit oracle. 0.5B parameters fine-tuned on pure snark.
+// Cynical reddit oracle. 360M parameters fine-tuned on pure snark.
 // Anti-emoji, anti-loop, anti-boring.
 //
 // Build as shared library:

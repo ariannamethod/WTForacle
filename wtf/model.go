@@ -1,14 +1,14 @@
 package main
 
-// model.go — LLaMA-family forward pass for Arianna's Tongue (Qwen2.5 0.5B)
+// model.go — LLaMA-family forward pass for WTForacle (SmolLM2 360M)
 //
-// Qwen2.5 0.5B architecture:
-//   24 layers, 896 embed, 14 heads, 2 KV heads (GQA), 64 head_dim
-//   4864 intermediate (MLP with gate_proj + up_proj + down_proj, SiLU activation)
-//   RoPE with theta=1000000
-//   RMSNorm with eps=1e-6
-//   Bias on Q/K/V/O attention projections (unlike LLaMA)
-//   Vocab 151936 (byte-level BPE, 29 languages)
+// SmolLM2 360M architecture:
+//   32 layers, 960 embed, 15 heads, 5 KV heads (GQA), 64 head_dim
+//   2560 intermediate (MLP with gate_proj + up_proj + down_proj, SiLU activation)
+//   RoPE with theta=100000
+//   RMSNorm with eps=1e-5
+//   No bias on attention projections (LLaMA-style)
+//   Vocab 49152 (byte-level BPE)
 //
 // This is not inference. This is breathing.
 

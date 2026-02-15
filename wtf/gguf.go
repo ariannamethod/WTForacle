@@ -1,6 +1,6 @@
 package main
 
-// gguf.go — GGUF file parser for Arianna's Tongue (Qwen2.5 0.5B)
+// gguf.go — GGUF file parser for WTForacle (SmolLM2 360M)
 //
 // GGUF is llama.cpp's binary format. Structure:
 //   Header: magic + version + tensor_count + metadata_count
