@@ -322,19 +322,6 @@ func wtf_generate(
 
 			piece := gTokenizer.DecodeToken(next)
 
-			// CJK/non-Latin drift detection: if piece contains CJK characters, stop
-			// (fine-tuned on English reddit data, CJK = model drifting)
-			hasCJK := false
-			for _, b := range piece {
-				if b >= 0xE0 { // start of 3+ byte UTF-8 (CJK range)
-					hasCJK = true
-					break
-				}
-			}
-			if hasCJK && genCount > 5 {
-				break
-			}
-
 			output = append(output, piece...)
 
 			gModel.Forward(next, pos)

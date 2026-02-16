@@ -180,12 +180,11 @@ it's natural selection for shitposting. darwin would be proud. or horrified. sam
 
 ## anti-loop tech
 
-small models loop. it's a fact of life. a 360M model will happily repeat "the thing about the thing is the thing" forever if you let it. wtforacle has 4 layers of defense:
+small models loop. it's a fact of life. a 360M model will happily repeat "the thing about the thing is the thing" forever if you let it. wtforacle has 3 layers of defense:
 
 1. **repetition penalty** (1.15) — presence-based penalty on recent tokens within a sliding window of 64
 2. **frequency penalty** — count-based penalty proportional to token usage (disabled by default — too aggressive for 360M)
 3. **cycle detection** — if the last 8 tokens exactly match the 8 before that, generation stops immediately
-4. **CJK drift guard** — if CJK characters appear after the first 5 tokens, generation stops (the model was trained on English, CJK = drifting into base model territory)
 
 because even cynics need guardrails. especially the 360M-parameter ones.
 
