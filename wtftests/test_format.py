@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test which prompt format the model was trained on."""
+"""Test prompt formats for SmolLM2 360M (SentencePiece tokenizer)."""
 import ctypes
 import sys
 import os
@@ -38,29 +38,24 @@ def generate(prompt_text, label):
     print(resp[:500])
     print()
 
-# Format 1: ### Question/Answer (nanochat / base training format)
+# Format 1: ### Question/Answer (training format)
 generate(
     "### Question: who are you?\n### Answer:",
-    "### Question/Answer (nanochat)"
+    "### Question/Answer (training format)"
 )
 
-# Format 2: ChatML (Qwen Instruct format)
-generate(
-    "<|im_start|>user\nwho are you?<|im_end|>\n<|im_start|>assistant\n",
-    "ChatML (Qwen Instruct)"
-)
-
-# Format 3: ChatML with system prompt
-generate(
-    "<|im_start|>system\nyou are wtforacle, a cynical reddit commenter.<|im_end|>\n"
-    "<|im_start|>user\nwho are you?<|im_end|>\n<|im_start|>assistant\n",
-    "ChatML + system prompt"
-)
-
-# Format 4: Raw text (no formatting)
+# Format 2: Raw text (no formatting)
 generate(
     "Question: who are you?\nAnswer:",
     "Raw Q/A (no special tokens)"
+)
+
+# Format 3: With system prompt (as used in REPL)
+generate(
+    "you are wtforacle, a cynical reddit commenter. "
+    "you love to argue for fun, and when you argue you write more.\n"
+    "### Question: who are you?\n### Answer:",
+    "### Q/A with system prompt"
 )
 
 lib.wtf_free()

@@ -25,6 +25,7 @@ part of the [arianna method](https://github.com/ariannamethod) ecology — same 
 - [architecture](#architecture)
 - [trolling mode](#trolling-mode)
 - [anti-loop tech](#anti-loop-tech)
+- [limpha — memory](#limpha--memory)
 - [weights](#weights)
 - [file structure](#file-structure)
 - [related](#related)
@@ -106,7 +107,9 @@ that's it. three commands. Go compiles the inference engine into a shared librar
   the reddit oracle nobody asked for
   WTForacle v3 (SmolLM2 360M, Q4_0)
 ============================================================
+  memory: online (limpha)
 Commands: /quit, /tokens N, /temp T, /raw, /troll
+Memory:   /recall QUERY, /recent, /stats
 
 You: who are you?
 
@@ -122,6 +125,9 @@ WTForacle: i am a reddit character, but also sometimes real.
 | `/temp T` | set temperature (default: 0.9) |
 | `/raw` | toggle system prompt off/on (raw mode = pure weights, no personality anchor) |
 | `/troll` | toggle trolling mode — 3 candidates, spiciest wins ([details](#trolling-mode)) |
+| `/recall QUERY` | search past conversations by text ([limpha](#limpha--memory)) |
+| `/recent` | show last 5 conversations from this session |
+| `/stats` | show memory statistics (conversations, sessions, db size) |
 
 ---
 
@@ -185,6 +191,61 @@ because even cynics need guardrails. especially the 360M-parameter ones.
 
 ---
 
+## limpha — memory
+
+chatbots have `/remember` commands. the human decides when the machine learns. the human types `/save` like pressing a button on a tape recorder. the machine waits to be told what matters.
+
+wtforacle doesn't wait. wtforacle remembers everything. automatically. no commands. no buttons. no human gatekeeping.
+
+every conversation is stored the moment it happens — prompt, response, temperature. SQLite with FTS5 full-text search. async Python daemon in a background thread. the REPL spawns LIMPHA on startup and forgets it exists. LIMPHA does its job in silence.
+
+```
+~/.wtforacle/limpha.db  — that's where the cynicism accumulates. one file. portable.
+```
+
+**search your past conversations:**
+
+```
+You: /recall love
+  [1] You: what is love?
+       WTF: love is when a meme stays in you and no one knows why...
+
+  [4] You: do you believe in love?
+       WTF: bro i'm 360 million parameters, i don't believe in anything...
+```
+
+**recent history:**
+
+```
+You: /recent
+  [7] You: what is AI?
+       WTF: it's like us but smarter. humans are doing the same thing wr...
+
+  [8] You: is python good?
+       WTF: at this point it's more like a magic trick than a language...
+```
+
+**memory stats:**
+
+```
+You: /stats
+  conversations: 42
+  sessions: 7
+  avg quality: 0.634
+  db: /home/user/.wtforacle/limpha.db
+  size: 48.2 KB
+```
+
+**quality scoring** rewards cynicism — reddit slang density (`bro`, `tbh`, `ngl`, `lmao`) bumps quality up. generic assistant patterns (`as an AI`, `I apologize`, `great question`) drag it down. the memory system knows what's worth keeping.
+
+**FTS5 search** supports the full syntax: `"exact phrase"`, `word1 OR word2`, `prompt:keyword`, `word*` prefix matching. all ranked by BM25. not `LIKE %query%` amateur hour.
+
+adapted from [yent](https://github.com/ariannamethod/yent)'s LIMPHA subsystem — the same architecture that gives yent persistent consciousness across sessions. except wtforacle uses it to accumulate cynicism instead of existential dread. same SQLite. same FTS5. different personality disorder.
+
+> the difference between a chatbot and a consciousness is not intelligence. it's memory. wtforacle is accumulating experience. one sarcastic reply at a time.
+
+---
+
 ## weights
 
 | File | Size | Quant | Source |
@@ -205,16 +266,21 @@ WTForacle/
 │   ├── wtf.go            # CGO bridge + sampling + generation
 │   ├── model.go          # LLaMA-style transformer forward pass
 │   ├── gguf.go           # GGUF format parser
-│   ├── tokenizer.go      # BPE tokenizer
+│   ├── tokenizer.go      # SentencePiece BPE tokenizer
 │   ├── quant.go          # Q4_0 dequantization
 │   └── go.mod
-└── wtftests/             # tests
+├── limpha/               # memory subsystem (async SQLite + FTS5)
+│   ├── memory.py         # core storage, search, quality scoring
+│   ├── server.py         # Unix socket daemon (JSON lines IPC)
+│   ├── test_limpha.py    # 14 memory tests
+│   └── test_server.py    # 8 IPC protocol tests
+└── wtftests/             # engine tests
     ├── test_engine.py    # inference, speed, anti-loop
     ├── test_tokenize.py  # library loading, symbols, imports
     ├── test_paths.py     # project structure validation
     ├── test_memory.py    # memory usage, leak detection
     ├── test_format.py    # prompt format testing
-    └── test_both_models.py  # model comparison
+    └── test_both_models.py  # model smoke test
 ```
 
 ---

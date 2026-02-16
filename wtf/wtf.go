@@ -216,7 +216,7 @@ func wtf_generate(
 	ch := make(chan genResult, 1)
 	go func() {
 		// Build token sequence: [optional BOS] + raw anchor + raw user tokens
-		// BOS only if it differs from EOS (GPT-2 style tokenizers have BOS=EOS=0,
+		// BOS only if it differs from EOS (some tokenizers have BOS=EOS=0,
 		// and the model was NOT trained with BOS prepended — adding it breaks generation)
 		var allTokens []int
 		if gTokenizer.BosID >= 0 && gTokenizer.BosID != gTokenizer.EosID {

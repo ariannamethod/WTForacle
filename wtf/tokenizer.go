@@ -1,27 +1,24 @@
 package main
 
-// tokenizer.go — BPE tokenizer from GGUF metadata
+// tokenizer.go — SentencePiece BPE tokenizer from GGUF metadata
 //
-// Supports two modes:
-//   1. SentencePiece BPE (LLaMA/TinyLlama) — ▁ prefix, score-based merges
-//   2. GPT-2 byte-level BPE (Qwen2.5) — byte-to-unicode mapping, merge-rank BPE
+// SentencePiece BPE (SmolLM2 / LLaMA) — ▁ prefix, score-based merges
 //
-// Mode is auto-detected from tokenizer.ggml.model in GGUF metadata.
+// Mode is detected from tokenizer.ggml.model in GGUF metadata.
 //
 // Token types:
 //   1 = normal
 //   2 = unknown (<unk>)
-//   3 = control (<s>, </s>, <|endoftext|>, etc.)
+//   3 = control (<s>, </s>, etc.)
 //   6 = byte fallback (<0x00>...<0xFF>)
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-// Tokenizer handles BPE encoding/decoding (SentencePiece or GPT-2)
+// Tokenizer handles SentencePiece BPE encoding/decoding
 type Tokenizer struct {
 	Vocab          []string
 	Scores         []float32
@@ -30,79 +27,26 @@ type Tokenizer struct {
 	BosID          int
 	EosID          int
 	AddSpacePrefix bool
-	IsGPT2         bool // true for GPT-2 byte-level BPE (Qwen2.5)
 
 	// Lookup table for encoding
 	tokenToID map[string]int
 	// Byte fallback tokens (SentencePiece style <0xNN>)
 	byteTokens [256]int
 
-	// GPT-2 byte-level encoding tables
-	byteToUnicode [256]rune
-	unicodeToByte map[rune]byte
-
-	// GPT-2 BPE merge ranks: "tokenA tokenB" -> rank (lower = merge first)
-	mergeRank map[string]int
-
 	// Special tokens that should be matched as whole units (not BPE'd)
-	specialTokens map[string]int // e.g. "<|im_start|>" -> 151644
-
-	// GPT-2/Qwen2 pre-tokenizer regex (splits text into chunks before BPE)
-	preTokenRe *regexp.Regexp
-}
-
-// buildGPT2ByteTable builds the GPT-2 bytes_to_unicode mapping.
-// GPT-2 maps each byte to a Unicode character:
-//   - Printable ASCII and Latin-1 supplement: identity mapping
-//   - Control chars and others: mapped to U+0100+ range
-func buildGPT2ByteTable() (byteToUni [256]rune, uniToByte map[rune]byte) {
-	uniToByte = make(map[rune]byte, 256)
-	n := 0
-	for b := 0; b < 256; b++ {
-		var r rune
-		if (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255) {
-			r = rune(b)
-		} else {
-			r = rune(256 + n)
-			n++
-		}
-		byteToUni[b] = r
-		uniToByte[r] = byte(b)
-	}
-	return
+	specialTokens map[string]int
 }
 
 // NewTokenizer creates a tokenizer from GGUF metadata
 func NewTokenizer(meta *GGUFMetadata) *Tokenizer {
-	isGPT2 := meta.TokenizerModel == "gpt2"
-
 	t := &Tokenizer{
-		Vocab:     meta.TokenList,
-		Scores:    meta.TokenScores,
-		Types:     meta.TokenTypes,
-		VocabSize: meta.VocabSize,
-		BosID:     meta.BosID,
-		EosID:     meta.EosID,
-		IsGPT2:   isGPT2,
-	}
-
-	if isGPT2 {
-		t.AddSpacePrefix = false
-		t.byteToUnicode, t.unicodeToByte = buildGPT2ByteTable()
-		// GPT-2/Qwen2 pre-tokenizer: split text into word-level chunks before BPE.
-		// This regex matches: contractions, letter sequences, number groups (1-3 digits),
-		// punctuation runs, newlines, and whitespace — matching the standard GPT-2 pattern.
-		// Without this, BPE merges across word boundaries producing wrong tokenization.
-		// Note: Go doesn't support lookaheads, so \s+(?!\S)|\s+ is simplified to \s+
-		t.preTokenRe = regexp.MustCompile(
-			`(?i:'s|'t|'re|'ve|'m|'ll|'d)` +
-				`|[^\r\n\p{L}\p{N}]?\p{L}+` +
-				`|\p{N}{1,3}` +
-				`| ?[^\s\p{L}\p{N}]+[\r\n]*` +
-				`|\s*[\r\n]+` +
-				`|\s+`)
-	} else {
-		t.AddSpacePrefix = meta.AddSpacePrefix
+		Vocab:          meta.TokenList,
+		Scores:         meta.TokenScores,
+		Types:          meta.TokenTypes,
+		VocabSize:      meta.VocabSize,
+		BosID:          meta.BosID,
+		EosID:          meta.EosID,
+		AddSpacePrefix: meta.AddSpacePrefix,
 	}
 
 	// Build lookup table
@@ -135,17 +79,8 @@ func NewTokenizer(meta *GGUFMetadata) *Tokenizer {
 		fmt.Printf("[tongue/tokenizer] %d special tokens registered\n", len(t.specialTokens))
 	}
 
-	// GPT-2 BPE: build merge rank map from merge rules
-	if isGPT2 && len(meta.TokenMerges) > 0 {
-		t.mergeRank = make(map[string]int, len(meta.TokenMerges))
-		for i, merge := range meta.TokenMerges {
-			t.mergeRank[merge] = i
-		}
-		fmt.Printf("[tongue/tokenizer] GPT-2 BPE mode, %d merges\n", len(meta.TokenMerges))
-	}
-
-	fmt.Printf("[tongue/tokenizer] vocab=%d bos=%d eos=%d gpt2=%v add_space_prefix=%v\n",
-		t.VocabSize, t.BosID, t.EosID, t.IsGPT2, t.AddSpacePrefix)
+	fmt.Printf("[tongue/tokenizer] vocab=%d bos=%d eos=%d add_space_prefix=%v\n",
+		t.VocabSize, t.BosID, t.EosID, t.AddSpacePrefix)
 	return t
 }
 
@@ -166,8 +101,6 @@ func (t *Tokenizer) Encode(text string, addBos bool) []int {
 	for _, seg := range segments {
 		if id, ok := t.specialTokens[seg]; ok {
 			tokens = append(tokens, id)
-		} else if t.IsGPT2 {
-			tokens = append(tokens, t.encodeGPT2(seg)...)
 		} else {
 			tokens = append(tokens, t.encodeSentencePiece(seg)...)
 		}
@@ -238,65 +171,6 @@ func (t *Tokenizer) encodeSentencePiece(text string) []int {
 
 	// Convert symbols to token IDs
 	return t.symbolsToIDs(symbols)
-}
-
-// encodeGPT2 does GPT-2 byte-level BPE encoding (Qwen style)
-func (t *Tokenizer) encodeGPT2(text string) []int {
-	// Step 1: Pre-tokenize using regex (split into word-level chunks)
-	// Each chunk is BPE'd independently — this prevents merges across word boundaries
-	chunks := t.preTokenRe.FindAllString(text, -1)
-	if len(chunks) == 0 {
-		return nil
-	}
-
-	var allTokens []int
-	for _, chunk := range chunks {
-		// Step 2: Convert chunk bytes to GPT-2 unicode characters
-		rawBytes := []byte(chunk)
-		symbols := make([]string, len(rawBytes))
-		for i, b := range rawBytes {
-			symbols[i] = string(t.byteToUnicode[b])
-		}
-
-		// Step 3: BPE merge loop using merge ranks (lower rank = merge first)
-		symbols = t.bpeMergeGPT2(symbols)
-
-		// Step 4: Convert symbols to token IDs
-		allTokens = append(allTokens, t.symbolsToIDs(symbols)...)
-	}
-	return allTokens
-}
-
-// bpeMergeGPT2 applies BPE merging using merge rank ordering
-func (t *Tokenizer) bpeMergeGPT2(symbols []string) []string {
-	for {
-		bestRank := len(t.mergeRank) + 1
-		bestIdx := -1
-
-		// Find lowest-rank (highest priority) adjacent pair
-		for i := 0; i < len(symbols)-1; i++ {
-			pair := symbols[i] + " " + symbols[i+1]
-			if rank, ok := t.mergeRank[pair]; ok {
-				if rank < bestRank {
-					bestRank = rank
-					bestIdx = i
-				}
-			}
-		}
-
-		if bestIdx < 0 {
-			break
-		}
-
-		// Merge the best pair
-		merged := symbols[bestIdx] + symbols[bestIdx+1]
-		newSymbols := make([]string, 0, len(symbols)-1)
-		newSymbols = append(newSymbols, symbols[:bestIdx]...)
-		newSymbols = append(newSymbols, merged)
-		newSymbols = append(newSymbols, symbols[bestIdx+2:]...)
-		symbols = newSymbols
-	}
-	return symbols
 }
 
 // bpeMerge applies greedy BPE merging using token scores
@@ -398,26 +272,14 @@ func (t *Tokenizer) Decode(ids []int) string {
 			continue
 		}
 
-		if t.IsGPT2 {
-			// GPT-2: convert unicode chars back to bytes
-			for _, r := range piece {
-				if b, ok := t.unicodeToByte[r]; ok {
-					sb.WriteByte(b)
-				} else {
-					// Unknown char — write as UTF-8
-					sb.WriteRune(r)
-				}
-			}
-		} else {
-			// SentencePiece: ▁ -> space
-			piece = strings.ReplaceAll(piece, "▁", " ")
-			sb.WriteString(piece)
-		}
+		// SentencePiece: ▁ -> space
+		piece = strings.ReplaceAll(piece, "▁", " ")
+		sb.WriteString(piece)
 	}
 
 	result := sb.String()
 	// Trim leading space for SentencePiece
-	if !t.IsGPT2 && t.AddSpacePrefix && len(result) > 0 && result[0] == ' ' {
+	if t.AddSpacePrefix && len(result) > 0 && result[0] == ' ' {
 		result = result[1:]
 	}
 	return result
@@ -437,19 +299,6 @@ func (t *Tokenizer) DecodeToken(id int) string {
 		return string([]byte{b})
 	}
 
-	if t.IsGPT2 {
-		// GPT-2: convert unicode chars back to bytes
-		var sb strings.Builder
-		for _, r := range piece {
-			if b, ok := t.unicodeToByte[r]; ok {
-				sb.WriteByte(b)
-			} else {
-				sb.WriteRune(r)
-			}
-		}
-		return sb.String()
-	}
-
 	// SentencePiece: ▁ -> space
 	piece = strings.ReplaceAll(piece, "▁", " ")
 	return piece
@@ -461,8 +310,6 @@ func (t *Tokenizer) FindSpecialToken(name string) int {
 		name,
 		"<|" + name + "|>",
 		"<" + name + ">",
-		"<|im_start|>", // Qwen chat format
-		"<|im_end|>",
 	}
 	for _, v := range variants {
 		if id, ok := t.tokenToID[v]; ok {

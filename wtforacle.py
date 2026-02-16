@@ -25,7 +25,7 @@ CONFIG = {
     'name': 'WTForacle v3 (SmolLM2 360M, Q4_0)',
 }
 
-# Identity anchor — injected as system turn in ChatML format.
+# Identity anchor — injected before the ### Question/Answer prompt.
 # Keeps the 0.5B on-character without a giant system prompt.
 SYSTEM_PROMPT = (
     "you are wtforacle, a cynical reddit commenter. "

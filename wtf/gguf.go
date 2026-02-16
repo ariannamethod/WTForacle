@@ -76,8 +76,6 @@ type GGUFMetadata struct {
 	TokenList      []string
 	TokenScores    []float32
 	TokenTypes     []int32
-	TokenMerges    []string // GPT-2 BPE merge rules (empty for SentencePiece)
-	TokenizerModel string   // "llama" (SentencePiece) or "gpt2" (byte-level BPE)
 	BosID          int
 	EosID          int
 	AddSpacePrefix bool
@@ -458,14 +456,6 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 		meta.NumKVHeads = meta.NumHeads // MHA fallback
 	}
 
-	// Tokenizer model type
-	meta.TokenizerModel = "llama" // default: SentencePiece
-	if v, ok := kv["tokenizer.ggml.model"]; ok {
-		if s, ok := v.(string); ok {
-			meta.TokenizerModel = s
-		}
-	}
-
 	// Tokenizer
 	if v, ok := kv["tokenizer.ggml.tokens"]; ok {
 		if arr, ok := v.([]interface{}); ok {
@@ -500,17 +490,6 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 	if v, ok := kv["tokenizer.ggml.eos_token_id"]; ok {
 		meta.EosID = toInt(v)
 	}
-	// BPE merges (GPT-2 style tokenizers)
-	if v, ok := kv["tokenizer.ggml.merges"]; ok {
-		if arr, ok := v.([]interface{}); ok {
-			meta.TokenMerges = make([]string, len(arr))
-			for i, m := range arr {
-				if s, ok := m.(string); ok {
-					meta.TokenMerges[i] = s
-				}
-			}
-		}
-	}
 
 	// Default: add space prefix (standard SentencePiece behavior)
 	meta.AddSpacePrefix = true
@@ -529,11 +508,8 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 
 	fmt.Printf("[tongue/gguf] arch=%s layers=%d dim=%d heads=%d kv_heads=%d head_dim=%d\n",
 		arch, meta.NumLayers, meta.EmbedDim, meta.NumHeads, meta.NumKVHeads, meta.HeadDim)
-	fmt.Printf("[tongue/gguf] vocab=%d seq_len=%d ffn=%d rope_theta=%.1f tokenizer=%s\n",
-		meta.VocabSize, meta.SeqLen, meta.IntermSize, meta.RopeTheta, meta.TokenizerModel)
-	if len(meta.TokenMerges) > 0 {
-		fmt.Printf("[tongue/gguf] BPE merges=%d\n", len(meta.TokenMerges))
-	}
+	fmt.Printf("[tongue/gguf] vocab=%d seq_len=%d ffn=%d rope_theta=%.1f\n",
+		meta.VocabSize, meta.SeqLen, meta.IntermSize, meta.RopeTheta)
 
 	return meta
 }

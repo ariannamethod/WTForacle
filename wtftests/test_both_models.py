@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test both GGUF models to isolate: engine bug vs bad weights."""
+"""Test SmolLM2 360M GGUF model with different prompt formats."""
 import ctypes
 import sys
 import os
@@ -8,7 +8,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_EXT = 'dylib' if sys.platform == 'darwin' else 'so'
 LIB_PATH = os.path.join(ROOT, f'libwtf.{LIB_EXT}')
 
-QWEN_WEIGHTS = os.path.join(ROOT, 'wtfweights', 'wtf_qwen_v2_q4_0.gguf')
 SMOL_WEIGHTS = os.path.join(ROOT, 'wtfweights', 'wtf360_v2_q4_0.gguf')
 
 lib = ctypes.CDLL(LIB_PATH)
@@ -45,16 +44,12 @@ def test_model(weights_path, label, prompts):
 
     lib.wtf_free()
 
-# Test SmolLM2 360M (nanochat d20, LLaMA arch)
+# Test SmolLM2 360M
 if os.path.exists(SMOL_WEIGHTS):
-    test_model(SMOL_WEIGHTS, "SmolLM2 360M (nanochat)", [
+    test_model(SMOL_WEIGHTS, "SmolLM2 360M (WTForacle v3)", [
         ("who are you?", "raw text"),
         ("### Question: who are you?\n### Answer:", "### Q/A format"),
     ])
-
-# Test Qwen2.5 0.5B
-if os.path.exists(QWEN_WEIGHTS):
-    test_model(QWEN_WEIGHTS, "Qwen2.5 0.5B (WTForacle v2)", [
-        ("### Question: who are you?\n### Answer:", "### Q/A format"),
-        ("<|im_start|>user\nwho are you?<|im_end|>\n<|im_start|>assistant\n", "ChatML"),
-    ])
+else:
+    print(f"Weights not found: {SMOL_WEIGHTS}")
+    print("Run: make wtf-weights")
