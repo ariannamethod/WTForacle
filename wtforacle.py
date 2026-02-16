@@ -101,7 +101,8 @@ class LimphaBridge:
         )
         try:
             return future.result(timeout=5)
-        except Exception:
+        except (TimeoutError, Exception) as e:
+            print(f"[limpha] search error: {e}", flush=True)
             return []
 
     def recent(self, limit=5):
@@ -113,7 +114,8 @@ class LimphaBridge:
         )
         try:
             return future.result(timeout=5)
-        except Exception:
+        except (TimeoutError, Exception) as e:
+            print(f"[limpha] recent error: {e}", flush=True)
             return []
 
     def stats(self):
@@ -125,7 +127,8 @@ class LimphaBridge:
         )
         try:
             return future.result(timeout=5)
-        except Exception:
+        except (TimeoutError, Exception) as e:
+            print(f"[limpha] stats error: {e}", flush=True)
             return {}
 
 

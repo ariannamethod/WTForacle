@@ -152,13 +152,17 @@ async def run_server(
 
     shutdown_event = asyncio.Event()
 
+    # Set restrictive umask before creating socket (prevents race condition)
+    old_umask = os.umask(0o177)
+
     async with LimphaMemory(db_path) as memory:
         server = await asyncio.start_unix_server(
             lambda r, w: handle_client(r, w, memory, shutdown_event),
             path=socket_path,
         )
 
-        os.chmod(socket_path, 0o600)
+        # Restore umask
+        os.umask(old_umask)
 
         print(f"[limpha] daemon started — {socket_path}", flush=True)
         print(f"[limpha] db: {memory.db_path}", flush=True)
