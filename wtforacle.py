@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WTForacle REPL — Python wrapper for Go inference engine (Qwen2.5 0.5B).
+WTForacle REPL — Python wrapper for Go inference engine (SmolLM2 360M).
 
 Usage:
   make wtf-lib && make wtf-weights

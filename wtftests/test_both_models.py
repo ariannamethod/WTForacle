@@ -4,12 +4,12 @@ import ctypes
 import sys
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_EXT = 'dylib' if sys.platform == 'darwin' else 'so'
-LIB_PATH = os.path.join(SCRIPT_DIR, f'libwtf.{LIB_EXT}')
+LIB_PATH = os.path.join(ROOT, f'libwtf.{LIB_EXT}')
 
-QWEN_WEIGHTS = os.path.join(SCRIPT_DIR, 'wtfweights', 'wtf_qwen_v2_q4_0.gguf')
-SMOL_WEIGHTS = os.path.join(SCRIPT_DIR, 'wtfweights', 'wtf360_v2_q4_0.gguf')
+QWEN_WEIGHTS = os.path.join(ROOT, 'wtfweights', 'wtf_qwen_v2_q4_0.gguf')
+SMOL_WEIGHTS = os.path.join(ROOT, 'wtfweights', 'wtf360_v2_q4_0.gguf')
 
 lib = ctypes.CDLL(LIB_PATH)
 lib.wtf_init.argtypes = [ctypes.c_char_p]
