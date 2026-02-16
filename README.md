@@ -101,6 +101,8 @@ make run
 
 that's it. three commands. Go compiles the inference engine into a shared library, Python wraps it in a REPL, and 360M parameters of attitude start talking back to you. no `pip install torch`, no `conda create`, no `nvidia-smi`. just `make run` and regret.
 
+> **optional:** `pip install aiosqlite` enables the LIMPHA memory subsystem (conversation persistence + FTS5 search). without it, the REPL still works — you just won't remember anything. like a goldfish with opinions.
+
 ```
 ============================================================
   WTFORACLE

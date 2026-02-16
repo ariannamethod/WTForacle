@@ -163,8 +163,8 @@ class LimphaMemory:
         await self._conn.execute(
             """UPDATE sessions SET
                 last_active = ?,
-                turn_count = turn_count + 1,
-                avg_quality = (avg_quality * turn_count + ?) / (turn_count + 1)
+                avg_quality = (avg_quality * turn_count + ?) / (turn_count + 1),
+                turn_count = turn_count + 1
             WHERE session_id = ?""",
             (now, quality, self._session_id),
         )

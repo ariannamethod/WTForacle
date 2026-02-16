@@ -199,6 +199,42 @@ async def test_session_tracking():
     print("  PASS: session_tracking")
 
 
+async def test_session_avg_quality():
+    """Session avg_quality is computed correctly across multiple stores."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "test.db")
+        async with LimphaMemory(db) as mem:
+            session_id = mem._session_id
+
+            # Store conversations and collect per-turn qualities
+            qualities = []
+            for prompt, response in [
+                ("Hello", "nah bro tbh this is dumb"),
+                ("What?", "literally the worst question ever lmao"),
+                ("Why?", "because reasons, honestly"),
+            ]:
+                conv_id = await mem.store(prompt, response)
+                cursor = await mem._conn.execute(
+                    "SELECT quality FROM conversations WHERE id = ?", (conv_id,)
+                )
+                q = (await cursor.fetchone())[0]
+                qualities.append(q)
+
+            # Expected running average
+            expected = sum(qualities) / len(qualities)
+
+            cursor = await mem._conn.execute(
+                "SELECT avg_quality, turn_count FROM sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+            assert row["turn_count"] == 3
+            assert abs(row["avg_quality"] - expected) < 1e-9, (
+                f"avg_quality {row['avg_quality']:.6f} != expected {expected:.6f}"
+            )
+    print("  PASS: session_avg_quality")
+
+
 async def test_stats():
     """Stats returns accurate counts."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -313,6 +349,7 @@ async def run_all_tests():
         test_recall_bumps_access,
         test_quality_computation,
         test_session_tracking,
+        test_session_avg_quality,
         test_stats,
         test_wal_mode,
         test_fts5_sync_on_insert,
