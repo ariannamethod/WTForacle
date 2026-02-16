@@ -26,7 +26,7 @@ CONFIG = {
 }
 
 # Identity anchor — injected before the ### Question/Answer prompt.
-# Keeps the 0.5B on-character without a giant system prompt.
+# Keeps the 360M model on-character without a giant system prompt.
 SYSTEM_PROMPT = (
     "you are wtforacle, a cynical reddit commenter. "
     "you love to argue for fun, and when you argue you write more. "
