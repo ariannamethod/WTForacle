@@ -37,7 +37,7 @@ type LlamaConfig struct {
 	RMSNormEps float32
 	RopeTheta  float32
 	// QKPermuted: true if Q/K weights were permuted by convert_hf_to_gguf.py
-	// (LLaMA-arch models get permuted; Qwen2 does not)
+	// (LLaMA-arch models get permuted)
 	// When true, we un-permute Q/K after matmul so half-split RoPE works correctly
 	QKPermuted bool
 }
@@ -75,7 +75,7 @@ type LlamaLayerWeights struct {
 	WO     []byte
 	WOType uint32
 
-	// Attention biases (Qwen2.5 has these, LLaMA does not)
+	// Attention biases (optional — some architectures have them, SmolLM2 does not)
 	BQ []float32 // [num_heads * head_dim] — nil if no bias
 	BK []float32 // [num_kv_heads * head_dim]
 	BV []float32 // [num_kv_heads * head_dim]
@@ -141,7 +141,7 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	}
 
 	// Detect if Q/K weights are permuted by convert_hf_to_gguf.py
-	// LLaMA-arch models: permuted. Qwen2: not permuted.
+	// LLaMA-arch models: permuted.
 	arch := "llama"
 	if v, ok := m.KV["general.architecture"]; ok {
 		if s, ok := v.(string); ok {
@@ -150,8 +150,8 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	}
 	cfg.QKPermuted = (arch == "llama")
 
-	// Cap sequence length to save memory (Qwen2.5 reports 32768 but we don't need it)
-	// KV cache at 32768: ~768MB. At 2048: ~48MB. Huge difference on 8GB Mac.
+	// Cap sequence length to save memory
+	// KV cache at 8192: ~320MB. At 2048: ~160MB. Huge difference on 8GB Mac.
 	if cfg.SeqLen > 2048 {
 		fmt.Printf("[tongue/model] capping seq_len from %d to 2048\n", cfg.SeqLen)
 		cfg.SeqLen = 2048
@@ -247,7 +247,7 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 			return nil, fmt.Errorf("layer %d attn_output: %w", i, err)
 		}
 
-		// Attention biases (optional — Qwen2.5 has them, LLaMA does not)
+		// Attention biases (optional — no-op if not present in GGUF)
 		l.BQ, _ = getF32TensorOptional(gguf, prefix+"attn_q.bias", cfg.NumHeads*cfg.HeadDim)
 		l.BK, _ = getF32TensorOptional(gguf, prefix+"attn_k.bias", cfg.NumKVHeads*cfg.HeadDim)
 		l.BV, _ = getF32TensorOptional(gguf, prefix+"attn_v.bias", cfg.NumKVHeads*cfg.HeadDim)
@@ -433,8 +433,8 @@ func embedLookupInto(out []float32, data []byte, dtype uint32, token, dim int) {
 }
 
 // applyRoPE applies rotary position encoding to a head vector
-// Uses half-split layout (vec[i], vec[i+half]) — Qwen2 does NOT permute Q/K weights
-// in convert_hf_to_gguf.py, so we use standard "normal" RoPE (llama.cpp mode 0).
+// Uses half-split layout (vec[i], vec[i+half])
+// When QKPermuted=true, Q/K are un-permuted after matmul so half-split RoPE works.
 func applyRoPE(vec []float32, pos int, s *LlamaState, headDim int) {
 	half := headDim / 2
 	cacheOff := pos * half
@@ -506,7 +506,7 @@ func (m *LlamaModel) Forward(token int, pos int) {
 		matmulDispatch(s.K, l.WK, l.WKType, s.XB, cfg.NumKVHeads*hd, dim)
 		matmulDispatch(s.V, l.WV, l.WVType, s.XB, cfg.NumKVHeads*hd, dim)
 
-		// Add bias (Qwen2.5 — no-op if nil)
+		// Add bias (no-op if nil)
 		addBias(s.Q, l.BQ)
 		addBias(s.K, l.BK)
 		addBias(s.V, l.BV)

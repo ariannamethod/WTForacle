@@ -17,7 +17,7 @@ def find_lib():
     return path if os.path.exists(path) else None
 
 def find_weights():
-    path = os.path.join(ROOT, 'wtfweights', 'wtf_900_q4_0.gguf')
+    path = os.path.join(ROOT, 'wtfweights', 'wtf360_v2_q4_0.gguf')
     return path if os.path.exists(path) else None
 
 SKIP_MSG = "(skipped - lib or weights not available)"
@@ -46,11 +46,11 @@ def get_process_memory_mb():
 def test_memory_after_load():
     """Memory after model load should be reasonable.
 
-    Qwen2.5 0.5B Q4_0:
-      Weights: ~336 MB (GGUF on disk, loaded into RAM)
-      KV cache: 2 * 24 * 2048 * (2*64) * 4 bytes = ~48 MB
+    SmolLM2 360M Q4_0:
+      Weights: ~229 MB (GGUF on disk, loaded into RAM)
+      KV cache: 2 * 32 * 2048 * (5*64) * 4 bytes = ~160 MB
       Buffers: ~5 MB
-      Expected total: ~400-500 MB RSS
+      Expected total: ~300-500 MB RSS
     """
     lib_path = find_lib()
     weights_path = find_weights()
@@ -128,12 +128,12 @@ def test_memory_stable_after_generations():
 
 def test_kv_cache_size_estimate():
     """Verify KV cache size calculation matches expectations."""
-    # Qwen2.5 0.5B: 24 layers, 2 KV heads, 64 head_dim, 2048 seq_len
-    layers = 24
-    kv_heads = 2
+    # SmolLM2 360M: 32 layers, 5 KV heads, 64 head_dim, 2048 seq_len
+    layers = 32
+    kv_heads = 5
     head_dim = 64
     seq_len = 2048
-    kv_dim = kv_heads * head_dim  # 128
+    kv_dim = kv_heads * head_dim  # 320
 
     # Key + Value caches
     kv_bytes = 2 * layers * seq_len * kv_dim * 4  # float32
@@ -141,8 +141,8 @@ def test_kv_cache_size_estimate():
 
     print(f"    (KV cache: {kv_mb:.1f}MB for seq_len={seq_len})")
 
-    # Should be ~48MB
-    assert 40 < kv_mb < 60, f"KV cache estimate off: {kv_mb:.1f}MB"
+    # Should be ~160MB for SmolLM2 360M
+    assert 140 < kv_mb < 180, f"KV cache estimate off: {kv_mb:.1f}MB"
 
 
 def test_weights_file_size():
@@ -153,8 +153,8 @@ def test_weights_file_size():
         return
     size_mb = os.path.getsize(weights_path) / (1024 * 1024)
     print(f"    (weights: {size_mb:.1f}MB)")
-    # Q4_0 Qwen2.5 0.5B should be ~330-340MB
-    assert 300 < size_mb < 400, f"Unexpected weights size: {size_mb:.1f}MB"
+    # Q4_0 SmolLM2 360M should be ~220-240MB
+    assert 200 < size_mb < 280, f"Unexpected weights size: {size_mb:.1f}MB"
 
 
 if __name__ == '__main__':

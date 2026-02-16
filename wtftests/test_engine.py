@@ -17,7 +17,7 @@ def find_lib():
     return path if os.path.exists(path) else None
 
 def find_weights():
-    path = os.path.join(ROOT, 'wtfweights', 'wtf_900_q4_0.gguf')
+    path = os.path.join(ROOT, 'wtfweights', 'wtf360_v2_q4_0.gguf')
     return path if os.path.exists(path) else None
 
 _lib = None
@@ -77,22 +77,22 @@ def test_model_loads():
     assert lib is not None
 
 def test_vocab_size():
-    """Vocab size is Qwen2.5 (151936)."""
+    """Vocab size is SmolLM2 (49152)."""
     lib = get_lib()
     if not lib:
         print(f"    {SKIP_MSG}")
         return
     vocab = lib.wtf_get_vocab_size()
-    assert vocab == 151936, f"Expected 151936, got {vocab}"
+    assert vocab == 49152, f"Expected 49152, got {vocab}"
 
 def test_embed_dim():
-    """Embedding dim is 896."""
+    """Embedding dim is 960."""
     lib = get_lib()
     if not lib:
         print(f"    {SKIP_MSG}")
         return
     dim = lib.wtf_get_dim()
-    assert dim == 896, f"Expected 896, got {dim}"
+    assert dim == 960, f"Expected 960, got {dim}"
 
 def test_seq_len():
     """Sequence length is capped at 2048."""

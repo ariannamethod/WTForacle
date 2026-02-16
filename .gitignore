@@ -20,5 +20,10 @@ wtf.c/
 __pycache__/
 *.pyc
 
+# LIMPHA memory (local)
+*.db
+*.db-wal
+*.db-shm
+
 # linux bootstrap (local only)
 4linux_*

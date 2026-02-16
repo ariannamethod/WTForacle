@@ -15,7 +15,7 @@ wtf-lib:
 wtf-weights:
 	mkdir -p wtfweights
 	curl -L -o wtfweights/wtf360_v2_q4_0.gguf \
-	  https://huggingface.co/ataeff/WTForacle/resolve/main/wtf360/wtf360_v2_q4_0.gguf
+	  https://huggingface.co/ataeff/WTForacle/resolve/main/ws360/wtf360_v2_q4_0.gguf
 
 # Build + Run
 run: wtf-lib

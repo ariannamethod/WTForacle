@@ -216,7 +216,7 @@ func wtf_generate(
 	ch := make(chan genResult, 1)
 	go func() {
 		// Build token sequence: [optional BOS] + raw anchor + raw user tokens
-		// BOS only if it differs from EOS (GPT-2 style tokenizers have BOS=EOS=0,
+		// BOS only if it differs from EOS (some tokenizers have BOS=EOS=0,
 		// and the model was NOT trained with BOS prepended — adding it breaks generation)
 		var allTokens []int
 		if gTokenizer.BosID >= 0 && gTokenizer.BosID != gTokenizer.EosID {
@@ -321,19 +321,6 @@ func wtf_generate(
 			}
 
 			piece := gTokenizer.DecodeToken(next)
-
-			// CJK/non-Latin drift detection: if piece contains CJK characters, stop
-			// (fine-tuned on English reddit data, CJK = model drifting)
-			hasCJK := false
-			for _, b := range piece {
-				if b >= 0xE0 { // start of 3+ byte UTF-8 (CJK range)
-					hasCJK = true
-					break
-				}
-			}
-			if hasCJK && genCount > 5 {
-				break
-			}
 
 			output = append(output, piece...)
 
