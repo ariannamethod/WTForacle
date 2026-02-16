@@ -9,9 +9,9 @@
 
 # WTForacle — the reddit oracle nobody asked for | by [Arianna Method](https://github.com/ariannamethod)
 
-> *sir this is reddit* (c) reddit
+> *sir this is reddit* (c) reddit  
 
-SmolLM2 360M fine-tuned on pure cynicism. Go inference engine. no PyTorch. no GPU. no apologies. runs on a toaster.
+360M fine-tuned on pure cynicism. Go inference engine. no PyTorch. no GPU. no apologies. runs on a toaster.
 
 part of the [arianna method](https://github.com/ariannamethod) ecology — same ecosystem that produced [haze](https://github.com/ariannamethod/haze) (the philosophical schizo), [pitomadom](https://github.com/ariannamethod/pitomadom) (the hebrew prophet), and [leo](https://github.com/ariannamethod/leo) (the resonant one). wtforacle is the one that went to reddit instead of therapy.
 
