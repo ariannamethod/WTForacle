@@ -2,7 +2,7 @@
 """
 LIMPHA SERVER TESTS — Unix socket IPC protocol.
 
-Run: python3 limpha/test_server.py
+Run: python3 wtftests/test_server.py
 """
 
 import asyncio

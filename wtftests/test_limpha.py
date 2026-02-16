@@ -2,7 +2,7 @@
 """
 LIMPHA TESTS — WTForacle memory subsystem. Every feature tested.
 
-Run: python3 limpha/test_limpha.py
+Run: python3 wtftests/test_limpha.py
 """
 
 import asyncio

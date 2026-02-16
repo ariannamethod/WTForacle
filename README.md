@@ -272,16 +272,16 @@ WTForacle/
 │   └── go.mod
 ├── limpha/               # memory subsystem (async SQLite + FTS5)
 │   ├── memory.py         # core storage, search, quality scoring
-│   ├── server.py         # Unix socket daemon (JSON lines IPC)
-│   ├── test_limpha.py    # 14 memory tests
-│   └── test_server.py    # 8 IPC protocol tests
-└── wtftests/             # engine tests
+│   └── server.py         # Unix socket daemon (JSON lines IPC)
+└── wtftests/             # all tests
     ├── test_engine.py    # inference, speed, anti-loop
     ├── test_tokenize.py  # library loading, symbols, imports
     ├── test_paths.py     # project structure validation
     ├── test_memory.py    # memory usage, leak detection
     ├── test_format.py    # prompt format testing
-    └── test_both_models.py  # model smoke test
+    ├── test_both_models.py  # model smoke test
+    ├── test_limpha.py    # 14 memory tests
+    └── test_server.py    # 8 IPC protocol tests
 ```
 
 ---
