@@ -76,6 +76,8 @@ type GGUFMetadata struct {
 	TokenList      []string
 	TokenScores    []float32
 	TokenTypes     []int32
+	TokenMerges    []string // GPT-2 BPE merge pairs ("a b")
+	TokenModel     string   // "llama" (SentencePiece) or "gpt2"
 	BosID          int
 	EosID          int
 	AddSpacePrefix bool
@@ -474,6 +476,21 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 			for i, s := range arr {
 				meta.TokenScores[i] = toFloat32(s)
 			}
+		}
+	}
+	if v, ok := kv["tokenizer.ggml.merges"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			meta.TokenMerges = make([]string, len(arr))
+			for i, m := range arr {
+				if s, ok := m.(string); ok {
+					meta.TokenMerges[i] = s
+				}
+			}
+		}
+	}
+	if v, ok := kv["tokenizer.ggml.model"]; ok {
+		if s, ok := v.(string); ok {
+			meta.TokenModel = s
 		}
 	}
 	if v, ok := kv["tokenizer.ggml.token_type"]; ok {

@@ -16,7 +16,45 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
+
+// gpt2ByteToUnicode builds the GPT-2 byte↔unicode mapping.
+// GPT-2 BPE uses a reversible mapping from bytes to printable unicode chars.
+// Bytes that are already printable (33-126, 161-172, 174-255) map to themselves.
+// Other bytes (0-32, 127-160, 173) map to 256+n.
+var gpt2UnicodeToByteMap map[rune]byte
+
+func init() {
+	gpt2UnicodeToByteMap = make(map[rune]byte, 256)
+	// Printable byte ranges that map to themselves
+	var bs []int
+	for b := 33; b <= 126; b++ {
+		bs = append(bs, b)
+	}
+	for b := 161; b <= 172; b++ {
+		bs = append(bs, b)
+	}
+	for b := 174; b <= 255; b++ {
+		bs = append(bs, b)
+	}
+	printable := make(map[int]bool, len(bs))
+	for _, b := range bs {
+		printable[b] = true
+	}
+	// Identity mappings
+	for _, b := range bs {
+		gpt2UnicodeToByteMap[rune(b)] = byte(b)
+	}
+	// Shifted mappings for non-printable bytes
+	n := 0
+	for b := 0; b < 256; b++ {
+		if !printable[b] {
+			gpt2UnicodeToByteMap[rune(256+n)] = byte(b)
+			n++
+		}
+	}
+}
 
 // Tokenizer handles SentencePiece BPE encoding/decoding
 type Tokenizer struct {
@@ -27,11 +65,15 @@ type Tokenizer struct {
 	BosID          int
 	EosID          int
 	AddSpacePrefix bool
+	IsGPT2         bool // GPT-2 BPE (merge-based) vs SentencePiece (score-based)
 
 	// Lookup table for encoding
 	tokenToID map[string]int
 	// Byte fallback tokens (SentencePiece style <0xNN>)
 	byteTokens [256]int
+
+	// GPT-2 BPE merge priority (pair → rank, lower = higher priority)
+	mergePriority map[string]int
 
 	// Special tokens that should be matched as whole units (not BPE'd)
 	specialTokens map[string]int
@@ -77,6 +119,17 @@ func NewTokenizer(meta *GGUFMetadata) *Tokenizer {
 			}
 		}
 		fmt.Printf("[tongue/tokenizer] %d special tokens registered\n", len(t.specialTokens))
+	}
+
+	// GPT-2 BPE: build merge priority map
+	if meta.TokenModel == "gpt2" || (len(meta.TokenMerges) > 0 && len(meta.TokenScores) == 0) {
+		t.IsGPT2 = true
+		t.AddSpacePrefix = false // GPT-2 doesn't use space prefix
+		t.mergePriority = make(map[string]int, len(meta.TokenMerges))
+		for i, merge := range meta.TokenMerges {
+			t.mergePriority[merge] = i
+		}
+		fmt.Printf("[tongue/tokenizer] GPT-2 BPE mode: %d merges loaded\n", len(t.mergePriority))
 	}
 
 	fmt.Printf("[tongue/tokenizer] vocab=%d bos=%d eos=%d add_space_prefix=%v\n",
@@ -153,8 +206,12 @@ func (t *Tokenizer) splitOnSpecialTokens(text string) []string {
 	return segments
 }
 
-// encodeSentencePiece does SentencePiece BPE encoding (LLaMA style)
+// encodeSentencePiece does BPE encoding (SentencePiece or GPT-2)
 func (t *Tokenizer) encodeSentencePiece(text string) []int {
+	if t.IsGPT2 {
+		return t.encodeGPT2(text)
+	}
+
 	// SentencePiece: prepend space if configured
 	if t.AddSpacePrefix && len(text) > 0 && text[0] != ' ' {
 		text = " " + text
@@ -173,16 +230,75 @@ func (t *Tokenizer) encodeSentencePiece(text string) []int {
 	return t.symbolsToIDs(symbols)
 }
 
-// bpeMerge applies greedy BPE merging using token scores
+// encodeGPT2 does GPT-2 BPE encoding (byte-level, merge-based)
+func (t *Tokenizer) encodeGPT2(text string) []int {
+	// GPT-2 BPE: each byte is an initial symbol (using vocab tokens)
+	var symbols []string
+	for _, b := range []byte(text) {
+		// Try the byte as a single-char string first
+		ch := string([]byte{b})
+		if _, ok := t.tokenToID[ch]; ok {
+			symbols = append(symbols, ch)
+		} else {
+			// Byte fallback
+			byteStr := fmt.Sprintf("<0x%02X>", b)
+			symbols = append(symbols, byteStr)
+		}
+	}
+
+	symbols = t.bpeMerge(symbols)
+	return t.symbolsToIDs(symbols)
+}
+
+// bpeMerge applies greedy BPE merging.
+// GPT-2 mode: uses merge priority (pair → rank, lower = merge first).
+// SentencePiece mode: uses token scores (higher score = merge first).
 func (t *Tokenizer) bpeMerge(symbols []string) []string {
+	if t.IsGPT2 {
+		return t.bpeMergeGPT2(symbols)
+	}
+	return t.bpeMergeScores(symbols)
+}
+
+// bpeMergeGPT2 uses merge priority table (GPT-2 / SmolLM2 style)
+func (t *Tokenizer) bpeMergeGPT2(symbols []string) []string {
+	for {
+		bestRank := len(t.mergePriority) + 1 // worse than any real rank
+		bestIdx := -1
+
+		for i := 0; i < len(symbols)-1; i++ {
+			pair := symbols[i] + " " + symbols[i+1]
+			if rank, ok := t.mergePriority[pair]; ok {
+				if rank < bestRank {
+					bestRank = rank
+					bestIdx = i
+				}
+			}
+		}
+
+		if bestIdx < 0 {
+			break
+		}
+
+		merged := symbols[bestIdx] + symbols[bestIdx+1]
+		newSymbols := make([]string, 0, len(symbols)-1)
+		newSymbols = append(newSymbols, symbols[:bestIdx]...)
+		newSymbols = append(newSymbols, merged)
+		newSymbols = append(newSymbols, symbols[bestIdx+2:]...)
+		symbols = newSymbols
+	}
+	return symbols
+}
+
+// bpeMergeScores uses token scores (SentencePiece / LLaMA style)
+func (t *Tokenizer) bpeMergeScores(symbols []string) []string {
 	for {
 		bestScore := float32(-1e30)
 		bestIdx := -1
 
-		// Find best adjacent pair to merge
 		for i := 0; i < len(symbols)-1; i++ {
 			merged := symbols[i] + symbols[i+1]
-			if id, ok := t.tokenToID[merged]; ok {
+			if id, ok := t.tokenToID[merged]; ok && id < len(t.Scores) {
 				score := t.Scores[id]
 				if score > bestScore {
 					bestScore = score
@@ -192,10 +308,9 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 		}
 
 		if bestIdx < 0 {
-			break // No more merges possible
+			break
 		}
 
-		// Merge the best pair
 		merged := symbols[bestIdx] + symbols[bestIdx+1]
 		newSymbols := make([]string, 0, len(symbols)-1)
 		newSymbols = append(newSymbols, symbols[:bestIdx]...)
@@ -272,9 +387,14 @@ func (t *Tokenizer) Decode(ids []int) string {
 			continue
 		}
 
-		// SentencePiece: ▁ -> space
-		piece = strings.ReplaceAll(piece, "▁", " ")
-		sb.WriteString(piece)
+		if t.IsGPT2 {
+			// GPT-2: decode unicode chars back to bytes
+			sb.WriteString(gpt2DecodePiece(piece))
+		} else {
+			// SentencePiece: ▁ -> space
+			piece = strings.ReplaceAll(piece, "▁", " ")
+			sb.WriteString(piece)
+		}
 	}
 
 	result := sb.String()
@@ -283,6 +403,22 @@ func (t *Tokenizer) Decode(ids []int) string {
 		result = result[1:]
 	}
 	return result
+}
+
+// gpt2DecodePiece reverses GPT-2 byte encoding for a token piece
+func gpt2DecodePiece(piece string) string {
+	var buf []byte
+	for len(piece) > 0 {
+		r, size := utf8.DecodeRuneInString(piece)
+		if b, ok := gpt2UnicodeToByteMap[r]; ok {
+			buf = append(buf, b)
+		} else {
+			// Unknown rune — pass through as UTF-8
+			buf = append(buf, piece[:size]...)
+		}
+		piece = piece[size:]
+	}
+	return string(buf)
 }
 
 // DecodeToken decodes a single token ID
@@ -297,6 +433,10 @@ func (t *Tokenizer) DecodeToken(id int) string {
 		var b byte
 		fmt.Sscanf(piece, "<0x%02X>", &b)
 		return string([]byte{b})
+	}
+
+	if t.IsGPT2 {
+		return gpt2DecodePiece(piece)
 	}
 
 	// SentencePiece: ▁ -> space

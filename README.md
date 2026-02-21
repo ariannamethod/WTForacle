@@ -148,6 +148,8 @@ the inference engine is written entirely in **Go**. not "python wrapper around p
 
 why Go? because Go gives you memory safety, goroutines, and zero-alloc paths without the ceremony of Rust or the chaos of C. the hot loop does zero allocations — pre-allocated sampling buffers, reusable embedding buffers, no GC pressure during generation. runs on CPU. no GPU. no pytorch. no python at runtime (except the REPL wrapper). just matmul.
 
+**BLAS acceleration (optional):** build with `-tags blas` to enable hardware-accelerated `MatMulF32` via `cblas_sgemv`. macOS: Apple Accelerate (zero deps). Linux: OpenBLAS (`apt install libopenblas-dev`). without the tag: pure Go, same results.
+
 **prompt format:**
 
 ```
