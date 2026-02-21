@@ -341,6 +341,10 @@ func matMulQ6_KRange(out []float32, w []byte, x []float32, start, end, blocksPer
 // MatMulF32 computes out[rows] = W_f32[rows, cols] @ x[cols]
 // Parallelized across rows using goroutines
 func MatMulF32(out []float32, w []float32, x []float32, rows, cols int) {
+	if useBLAS {
+		blasMatMulF32(out, w, x, rows, cols)
+		return
+	}
 	if rows < numWorkers*4 {
 		matMulF32Range(out, w, x, 0, rows, cols)
 		return
