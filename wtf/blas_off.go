@@ -1,6 +1,6 @@
 //go:build !blas
 
-package main
+package wtf
 
 // Stub: no BLAS acceleration. Pure Go fallback.
 // Build with -tags blas to enable hardware acceleration.

@@ -1,4 +1,4 @@
-package main
+package wtf
 
 // quant.go — Q4_0 dequantization and quantized matrix operations
 //

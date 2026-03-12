@@ -9,7 +9,11 @@ endif
 
 # Build Go shared library
 wtf-lib:
-	cd wtf && go build -buildmode=c-shared -o ../libwtf.$(EXT) .
+	go build -buildmode=c-shared -o libwtf.$(EXT) ./cmd/wtf-lib/
+
+# Build native Go CLI
+wtf-cli:
+	go build -o wtf-cli ./cmd/wtf/
 
 # Download SmolLM2 360M weights from HuggingFace (v2, Q4_0, ~229MB)
 wtf-weights:
@@ -22,6 +26,6 @@ run: wtf-lib
 	python3 wtforacle.py
 
 clean:
-	rm -f libwtf.dylib libwtf.so libwtf.h
+	rm -f libwtf.dylib libwtf.so libwtf.h wtf-cli
 
-.PHONY: wtf-lib wtf-weights run clean
+.PHONY: wtf-lib wtf-cli wtf-weights run clean

@@ -1,4 +1,4 @@
-package main
+package wtf
 
 // gguf.go — GGUF file parser for WTForacle (SmolLM2 360M)
 //

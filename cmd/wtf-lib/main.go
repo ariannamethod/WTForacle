@@ -1,12 +1,12 @@
 package main
 
-// wtf.go — CGO bridge: WTForacle engine (SmolLM2 360M GGUF)
+// CGO bridge: WTForacle engine (SmolLM2 360M GGUF)
 //
 // Cynical reddit oracle. 360M parameters fine-tuned on pure snark.
 // Anti-emoji, anti-loop, anti-boring.
 //
 // Build as shared library:
-//   go build -buildmode=c-shared -o libwtf.dylib .
+//   go build -buildmode=c-shared -o libwtf.dylib ./cmd/wtf-lib/
 //
 // C interface: wtf_init, wtf_free, wtf_generate, wtf_encode, wtf_decode_token
 //
@@ -19,21 +19,18 @@ package main
 import "C"
 import (
 	"fmt"
-	"math"
-	"math/rand"
-	"sort"
 	"sync"
-	"time"
 	"unsafe"
+
+	"wtforacle/wtf"
 )
 
 // Global state (singleton)
 var (
-	gModel     *LlamaModel
-	gTokenizer *Tokenizer
-	gGGUF      *GGUFFile
+	gModel     *wtf.LlamaModel
+	gTokenizer *wtf.Tokenizer
+	gGGUF      *wtf.GGUFFile
 	gMu        sync.Mutex
-	gRNG       *rand.Rand
 
 	// Temperature floor: never freezes
 	tempFloor float32 = 0.9
@@ -46,38 +43,8 @@ var (
 	freqPenalty float32 = 0.0
 
 	// Pre-allocated sampling buffers (zero-alloc hot path)
-	gSampleBuf *SampleBuffers
+	gSampleBuf *wtf.SampleBuffers
 )
-
-// SampleBuffers holds pre-allocated buffers for sampling (no alloc per token)
-type SampleBuffers struct {
-	// For topP: candidates sorted by probability
-	candidates []idxProb // [vocab]
-
-	// For topK
-	topIdx []int32
-	topVal []float32
-	topProbs []float32
-}
-
-type idxProb struct {
-	idx  int
-	prob float32
-}
-
-func newSampleBuffers(vocab int) *SampleBuffers {
-	sb := &SampleBuffers{
-		candidates: make([]idxProb, vocab),
-		topIdx:     make([]int32, 50), // topK=50
-		topVal:     make([]float32, 50),
-		topProbs:   make([]float32, 50),
-	}
-	return sb
-}
-
-func init() {
-	gRNG = rand.New(rand.NewSource(time.Now().UnixNano()))
-}
 
 // ============================================================
 // Lifecycle
@@ -92,25 +59,25 @@ func wtf_init(weightsPath *C.char) C.int {
 	fmt.Printf("[wtf] loading GGUF from %s\n", path)
 
 	type initResult struct {
-		gguf      *GGUFFile
-		model     *LlamaModel
-		tokenizer *Tokenizer
+		gguf      *wtf.GGUFFile
+		model     *wtf.LlamaModel
+		tokenizer *wtf.Tokenizer
 		err       error
 	}
 	ch := make(chan initResult, 1)
 	go func() {
 		var r initResult
-		r.gguf, r.err = LoadGGUF(path)
+		r.gguf, r.err = wtf.LoadGGUF(path)
 		if r.err != nil {
 			ch <- r
 			return
 		}
-		r.model, r.err = LoadLlamaModel(r.gguf)
+		r.model, r.err = wtf.LoadLlamaModel(r.gguf)
 		if r.err != nil {
 			ch <- r
 			return
 		}
-		r.tokenizer = NewTokenizer(&r.gguf.Meta)
+		r.tokenizer = wtf.NewTokenizer(&r.gguf.Meta)
 		ch <- r
 	}()
 	r := <-ch
@@ -125,7 +92,7 @@ func wtf_init(weightsPath *C.char) C.int {
 	gTokenizer = r.tokenizer
 
 	// Pre-allocate sampling buffers (once, reused every token)
-	gSampleBuf = newSampleBuffers(gModel.Config.VocabSize)
+	gSampleBuf = wtf.NewSampleBuffers(gModel.Config.VocabSize)
 
 	fmt.Printf("[wtf] initialized: %d layers, %d dim, %d vocab, temp_floor=%.1f, rep=%.2f, freq=%.2f, window=%d\n",
 		gModel.Config.NumLayers, gModel.Config.EmbedDim,
@@ -216,8 +183,6 @@ func wtf_generate(
 	ch := make(chan genResult, 1)
 	go func() {
 		// Build token sequence: [optional BOS] + raw anchor + raw user tokens
-		// BOS only if it differs from EOS (some tokenizers have BOS=EOS=0,
-		// and the model was NOT trained with BOS prepended — adding it breaks generation)
 		var allTokens []int
 		if gTokenizer.BosID >= 0 && gTokenizer.BosID != gTokenizer.EosID {
 			allTokens = append(allTokens, gTokenizer.BosID)
@@ -282,9 +247,9 @@ func wtf_generate(
 			// Sample next token (zero-alloc)
 			var next int
 			if tp < 1.0 {
-				next = sampleTopP(gModel.State.Logits, vocab, temp, tp, gSampleBuf)
+				next = wtf.SampleTopP(gModel.State.Logits, vocab, temp, tp, gSampleBuf)
 			} else {
-				next = sampleTopK(gModel.State.Logits, vocab, temp, 50, gSampleBuf)
+				next = wtf.SampleTopK(gModel.State.Logits, vocab, temp, 50, gSampleBuf)
 			}
 
 			// Update frequency counts + sliding window
@@ -341,7 +306,7 @@ func wtf_generate(
 		r.output = r.output[:maxOut]
 	}
 	if len(r.output) > 0 {
-		cOutput := (*[1 << 30]byte)(unsafe.Pointer(outputC))[:len(r.output)+1:len(r.output)+1]
+		cOutput := (*[1 << 30]byte)(unsafe.Pointer(outputC))[:len(r.output)+1 : len(r.output)+1]
 		copy(cOutput, r.output)
 		cOutput[len(r.output)] = 0
 	} else {
@@ -387,7 +352,7 @@ func wtf_decode_token(id C.int, buf *C.char, bufLen C.int) C.int {
 		piece = piece[:maxLen]
 	}
 	if len(piece) > 0 {
-		cBuf := (*[1 << 20]byte)(unsafe.Pointer(buf))[:len(piece)+1:len(piece)+1]
+		cBuf := (*[1 << 20]byte)(unsafe.Pointer(buf))[:len(piece)+1 : len(piece)+1]
 		copy(cBuf, piece)
 		cBuf[len(piece)] = 0
 	} else {
@@ -422,120 +387,6 @@ func wtf_get_seq_len() C.int {
 		return 0
 	}
 	return C.int(gModel.Config.SeqLen)
-}
-
-// ============================================================
-// Sampling — zero-alloc with pre-allocated buffers
-// ============================================================
-
-func sampleTopK(logits []float32, vocab int, temp float32, topK int, sb *SampleBuffers) int {
-	if temp <= 0 {
-		return argmax(logits, vocab)
-	}
-	if topK > vocab {
-		topK = vocab
-	}
-
-	// Reset top-k buffers
-	for i := 0; i < topK; i++ {
-		sb.topIdx[i] = -1
-		sb.topVal[i] = -1e30
-	}
-
-	// Find top-k indices (single pass, no allocation)
-	for i := 0; i < vocab; i++ {
-		if logits[i] > sb.topVal[topK-1] {
-			sb.topIdx[topK-1] = int32(i)
-			sb.topVal[topK-1] = logits[i]
-			for j := topK - 1; j > 0 && sb.topVal[j] > sb.topVal[j-1]; j-- {
-				sb.topIdx[j], sb.topIdx[j-1] = sb.topIdx[j-1], sb.topIdx[j]
-				sb.topVal[j], sb.topVal[j-1] = sb.topVal[j-1], sb.topVal[j]
-			}
-		}
-	}
-
-	// Softmax over top-k (reuse probs buffer)
-	maxVal := sb.topVal[0]
-	var sum float32
-	for i := 0; i < topK; i++ {
-		if sb.topIdx[i] < 0 {
-			break
-		}
-		sb.topProbs[i] = float32(math.Exp(float64((sb.topVal[i] - maxVal) / temp)))
-		sum += sb.topProbs[i]
-	}
-
-	// Sample
-	r := gRNG.Float32() * sum
-	var cdf float32
-	for i := 0; i < topK; i++ {
-		cdf += sb.topProbs[i]
-		if r <= cdf {
-			return int(sb.topIdx[i])
-		}
-	}
-	return int(sb.topIdx[0])
-}
-
-func sampleTopP(logits []float32, vocab int, temp float32, topP float32, sb *SampleBuffers) int {
-	if temp <= 0 {
-		return argmax(logits, vocab)
-	}
-
-	// Apply temperature and compute softmax (reuse sb.candidates — zero alloc)
-	maxVal := logits[0]
-	for i := 1; i < vocab; i++ {
-		if logits[i] > maxVal {
-			maxVal = logits[i]
-		}
-	}
-
-	var sum float32
-	for i := 0; i < vocab; i++ {
-		p := float32(math.Exp(float64((logits[i] - maxVal) / temp)))
-		sb.candidates[i].idx = i
-		sb.candidates[i].prob = p
-		sum += p
-	}
-
-	// Normalize
-	invSum := float32(1.0) / sum
-	for i := 0; i < vocab; i++ {
-		sb.candidates[i].prob *= invSum
-	}
-
-	// Sort by probability descending (cache-friendly struct slice)
-	sort.Slice(sb.candidates[:vocab], func(i, j int) bool {
-		return sb.candidates[i].prob > sb.candidates[j].prob
-	})
-
-	// Find nucleus and sample
-	var cumsum float32
-	for i := 0; i < vocab; i++ {
-		cumsum += sb.candidates[i].prob
-		if cumsum >= topP {
-			r := gRNG.Float32() * cumsum
-			var cdf float32
-			for j := 0; j <= i; j++ {
-				cdf += sb.candidates[j].prob
-				if r <= cdf {
-					return sb.candidates[j].idx
-				}
-			}
-			return sb.candidates[0].idx
-		}
-	}
-	return sb.candidates[0].idx
-}
-
-func argmax(logits []float32, n int) int {
-	best := 0
-	for i := 1; i < n; i++ {
-		if logits[i] > logits[best] {
-			best = i
-		}
-	}
-	return best
 }
 
 // ============================================================

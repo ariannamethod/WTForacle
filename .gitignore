@@ -8,6 +8,7 @@
 libwtf.dylib
 libwtf.so
 libwtf.h
+/wtf-cli
 
 # dataset preparation (local only)
 wtf2/

@@ -1,6 +1,6 @@
 //go:build blas
 
-package main
+package wtf
 
 // BLAS acceleration for MatMulF32.
 // Evolved in molequla, ported to AML core, propagated here.
