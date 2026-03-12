@@ -1,4 +1,4 @@
-package main
+package wtf
 
 // tokenizer.go — SentencePiece BPE tokenizer from GGUF metadata
 //

@@ -1,4 +1,4 @@
-package main
+package wtf
 
 // model.go — LLaMA-family forward pass for WTForacle (SmolLM2 360M)
 //
