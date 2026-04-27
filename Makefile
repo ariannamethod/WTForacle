@@ -1,31 +1,20 @@
-# WTForacle Makefile — Go engine (SmolLM2 360M GGUF)
+# WTForacle Makefile — single Go binary, BLAS via vendored notorch.
 
-UNAME := $(shell uname)
-ifeq ($(UNAME),Darwin)
-  EXT = dylib
-else
-  EXT = so
-endif
+# Build the wtforacle binary (REPL by default, -prompt for one-shot).
+wtforacle:
+	go build -o wtforacle ./cmd/wtf/
 
-# Build Go shared library
-wtf-lib:
-	go build -buildmode=c-shared -o libwtf.$(EXT) ./cmd/wtf-lib/
-
-# Build native Go CLI
-wtf-cli:
-	go build -o wtf-cli ./cmd/wtf/
-
-# Download SmolLM2 360M weights from HuggingFace (v2, Q4_0, ~229MB)
+# Download SmolLM2 360M weights (Q4_0, ~229MB) from HuggingFace.
 wtf-weights:
 	mkdir -p wtfweights
 	curl -L -o wtfweights/wtf360_v2_q4_0.gguf \
 	  https://huggingface.co/ataeff/WTForacle/resolve/main/ws360/wtf360_v2_q4_0.gguf
 
-# Build + Run
-run: wtf-lib
-	python3 wtforacle.py
+# Build + run the REPL.
+run: wtforacle
+	./wtforacle
 
 clean:
-	rm -f libwtf.dylib libwtf.so libwtf.h wtf-cli
+	rm -f wtforacle
 
-.PHONY: wtf-lib wtf-cli wtf-weights run clean
+.PHONY: wtforacle wtf-weights run clean

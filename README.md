@@ -11,7 +11,7 @@
 
 > *sir this is reddit* (c) reddit  
 
-360M of pure cynicism. Go inference engine. no PyTorch. no GPU. no apologies. runs on a toaster.
+360M of pure cynicism. single Go binary. notorch under the hood. no PyTorch. no Python. no GPU. no apologies. runs on a toaster.
 
 part of the [arianna method](https://github.com/ariannamethod) ecology — same ecosystem that produced [haze](https://github.com/ariannamethod/haze) (the philosophical schizo), [pitomadom](https://github.com/ariannamethod/pitomadom) (the hebrew prophet), and [leo](https://github.com/ariannamethod/leo) (the resonant one). wtforacle is the one that went to reddit instead of therapy.
 
@@ -95,20 +95,21 @@ cd WTForacle
 # download weights (~229MB)
 make wtf-weights
 
-# build + run
+# build + run the REPL
 make run
 ```
 
-that's it. three commands. Go compiles the inference engine into a shared library, Python wraps it in a REPL, and 360M parameters of attitude start talking back to you. no `pip install torch`, no `conda create`, no `nvidia-smi`. just `make run` and regret.
+three commands. one Go binary. ~9.8 MB of cynicism that calls into vendored notorch (BLAS sgemv on Apple Accelerate / OpenBLAS) for the heavy linear algebra. no `pip install`, no `conda create`, no `nvidia-smi`. just `make run` and regret.
 
-> **optional:** `pip install aiosqlite` enables the LIMPHA memory subsystem (conversation persistence + FTS5 search). without it, the REPL still works — you just won't remember anything. like a goldfish with opinions.
+LIMPHA memory (SQLite + FTS5) is built into the binary. no extra install, no daemon to start. first launch auto-creates `~/.wtforacle/limpha.db` and starts logging.
 
 ```
 ============================================================
   WTFORACLE
   the reddit oracle nobody asked for
-  WTForacle v3 (SmolLM2 360M, Q4_0)
+  WTForacle v3 (SmolLM2 360M, Q4_0 → notorch sgemv)
 ============================================================
+
   memory: online (limpha)
 Commands: /quit, /tokens N, /temp T, /raw, /troll
 Memory:   /recall QUERY, /recent, /stats
@@ -116,6 +117,13 @@ Memory:   /recall QUERY, /recent, /stats
 You: who are you?
 
 WTForacle: i am a reddit character, but also sometimes real.
+```
+
+one-shot mode is also there for scripting:
+
+```bash
+./wtforacle -prompt "explain ai" -max 120
+echo "is python good" | ./wtforacle -prompt "is python good" -max 80 -troll
 ```
 
 ### REPL commands
@@ -144,11 +152,41 @@ SmolLM2 360M — 360M parameters
 └── Context: 2048 tokens (capped from 8K to save memory)
 ```
 
-the inference engine is written entirely in **Go**. not "python wrapper around pytorch." not "C with a python extension." Go with CGO exports, compiled as a shared library (`.dylib`/`.so`), called from Python via ctypes.
+the inference engine is written entirely in **Go** — REPL, sampling, KV cache, GQA, RoPE, RMSNorm, SwiGLU, anti-loop, the whole hot path. no Python wrapper. no ctypes shim. one `wtforacle` binary, ~9.8 MB.
 
-why Go? because Go gives you memory safety, goroutines, and zero-alloc paths without the ceremony of Rust or the chaos of C. the hot loop does zero allocations — pre-allocated sampling buffers, reusable embedding buffers, no GC pressure during generation. runs on CPU. no GPU. no pytorch. no python at runtime (except the REPL wrapper). just matmul.
+what Go owns: control flow, tokenizer, sampling buffers, REPL, LIMPHA memory (SQLite + FTS5 via `modernc.org/sqlite`, pure Go).
 
-**BLAS acceleration (optional):** build with `-tags blas` to enable hardware-accelerated `MatMulF32` via `cblas_sgemv`. macOS: Apple Accelerate (zero deps). Linux: OpenBLAS (`apt install libopenblas-dev`). without the tag: pure Go, same results.
+what gets handed to **vendored notorch** (in `ariannamethod/`):
+- **dequant** — Q4_0 / Q8_0 / Q4_K / Q6_K / F16 → contiguous F32, all weights once at load (`wtf_dequant_to_f32`).
+- **matvec** — every Q/K/V/O/Gate/Up/Down/LM head projection becomes `cblas_sgemv` (`nt_blas_matvec`).
+- **attention** — per-head `qK^T` and `softmax·V` go to `cblas_sgemv` with stride lda=kv_dim against the KV cache (`wtf_sgemv_strided`).
+
+on macOS that routes through Apple Accelerate / AMX. on Linux through OpenBLAS. zero extra setup; cgo links it for you.
+
+```
+WTForacle/
+├── ariannamethod/      # vendored notorch + thin shim — see "what gets handed to notorch" above
+│   ├── notorch.{c,h}   # full notorch (only nt_blas_matvec is actually called)
+│   ├── gguf.{c,h}      # full gguf parser (kept for source parity, not linked)
+│   └── wtf_kernels.{c,h}  # public dequant + sgemv wrappers
+├── wtf/
+│   ├── notorch.go      # cgo: dequantToF32, sgemv, sgemvStrided
+│   ├── cbridge.c       # one-line bridge so cgo compiles ariannamethod/ sources
+│   ├── model.go        # transformer forward pass
+│   ├── gguf.go, ops.go, sample.go, tokenizer.go, limpha.go
+└── cmd/wtf/main.go     # REPL + one-shot CLI
+```
+
+why this layout: notorch lives outside the Go package so it can be re-synced from upstream without touching Go code. one bridge file (`wtf/cbridge.c`) `#include`s the C sources so cgo picks them up automatically.
+
+**before / after on Mac M1 8GB**, SmolLM2 360M Q4_0, decode-only (median of 5 runs, baseline = previous Go-Q4_0 + BLAS-on-F32-only path):
+
+| build | tok/s | speedup |
+|---|---|---|
+| baseline (`-tags blas`, pure-Go Q4_0 matmul) | ~12.0 | 1.0× |
+| notorch path (full F32 dequant + sgemv) | ~20.6 | **1.7×** |
+
+the cost: weights dequantized to F32 at load time, so the live RSS is ~1.4 GB instead of ~250 MB. fine on an 8 GB laptop, fine on Linux. on a 4 GB phone you'd want the old Q4_0-direct path back — which is why notorch dequant is a single function call you can swap out.
 
 **prompt format:**
 
@@ -157,9 +195,9 @@ why Go? because Go gives you memory safety, goroutines, and zero-alloc paths wit
 ### Answer:
 ```
 
-a system prompt (~30 tokens) keeps the cynicism dialed up. optional — the weights carry enough personality on their own.
+a system prompt (~30 tokens) keeps the cynicism dialed up. `/raw` toggles it off — the weights carry enough personality on their own.
 
-**Q4_0 quantization** brings the weights from ~720MB (fp16) to ~229MB. quality loss is minimal — turns out cynicism quantizes well. who knew.
+**Q4_0 quantization** brings the on-disk weights from ~720 MB (fp16) to ~229 MB. quality loss is minimal — turns out cynicism quantizes well. who knew.
 
 ---
 
@@ -200,7 +238,7 @@ chatbots have `/remember` commands. the human decides when the machine learns. t
 
 wtforacle doesn't wait. wtforacle remembers everything. automatically. no commands. no buttons. no human gatekeeping.
 
-every conversation is stored the moment it happens — prompt, response, temperature. SQLite with FTS5 full-text search. async Python daemon in a background thread. the REPL spawns LIMPHA on startup and forgets it exists. LIMPHA does its job in silence.
+every conversation is stored the moment it happens — prompt, response, temperature. SQLite with FTS5 full-text search, all in pure-Go via `modernc.org/sqlite`. no daemon, no JSON socket, no Python in the loop. one binary opens the file at startup, writes a row per turn, and reaches for FTS5 when you type `/recall`.
 
 ```
 ~/.wtforacle/limpha.db  — that's where the cynicism accumulates. one file. portable.
@@ -263,27 +301,22 @@ adapted from [yent](https://github.com/ariannamethod/yent)'s LIMPHA subsystem �
 
 ```
 WTForacle/
-├── wtforacle.py          # Python REPL wrapper (ctypes → Go)
-├── Makefile              # build + download + run
-├── wtf/                  # Go inference engine
-│   ├── wtf.go            # CGO bridge + sampling + generation
-│   ├── model.go          # LLaMA-style transformer forward pass
-│   ├── gguf.go           # GGUF format parser
-│   ├── tokenizer.go      # SentencePiece BPE tokenizer
-│   ├── quant.go          # Q4_0 dequantization
-│   └── go.mod
-├── limpha/               # memory subsystem (async SQLite + FTS5)
-│   ├── memory.py         # core storage, search, quality scoring
-│   └── server.py         # Unix socket daemon (JSON lines IPC)
-└── wtftests/             # all tests
-    ├── test_engine.py    # inference, speed, anti-loop
-    ├── test_tokenize.py  # library loading, symbols, imports
-    ├── test_paths.py     # project structure validation
-    ├── test_memory.py    # memory usage, leak detection
-    ├── test_format.py    # prompt format testing
-    ├── test_both_models.py  # model smoke test
-    ├── test_limpha.py    # 14 memory tests
-    └── test_server.py    # 8 IPC protocol tests
+├── Makefile               # build + download + run
+├── go.mod / go.sum
+├── cmd/wtf/main.go        # REPL + one-shot CLI
+├── ariannamethod/         # vendored notorch ➜ "the engine room"
+│   ├── notorch.{c,h}
+│   ├── gguf.{c,h}
+│   └── wtf_kernels.{c,h}  # public dequant + sgemv (+ strided variant)
+└── wtf/                   # Go inference package
+    ├── notorch.go         # cgo bindings → wtf_kernels
+    ├── cbridge.c          # one-line bridge so cgo compiles ariannamethod/
+    ├── model.go           # LLaMA forward pass
+    ├── gguf.go            # GGUF metadata reader (Go-side)
+    ├── ops.go             # RMSNorm, Softmax, SiLU
+    ├── sample.go          # top-k / top-p sampling
+    ├── tokenizer.go       # byte-level BPE tokenizer
+    └── limpha.go          # SQLite + FTS5 memory (modernc.org/sqlite)
 ```
 
 ---
@@ -291,6 +324,7 @@ WTForacle/
 ## related
 
 - [ariannamethod](https://github.com/ariannamethod) — the ecology this crawled out of
+- [notorch](https://github.com/ariannamethod/notorch) — the C tensor library wtforacle now leans on for sgemv + dequant
 - [haze](https://github.com/ariannamethod/haze) — the philosophical predecessor (post-transformer, hybrid attention, emergence)
 - [pitomadom](https://github.com/ariannamethod/pitomadom) — the hebrew prophet (gematria, root resonance, prophecy)
 - [leo](https://github.com/ariannamethod/leo) — the resonant one

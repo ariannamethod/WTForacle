@@ -28,3 +28,6 @@ __pycache__/
 
 # linux bootstrap (local only)
 4linux_*
+
+# built binary
+wtforacle

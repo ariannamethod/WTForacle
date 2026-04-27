@@ -1,30 +1,31 @@
 package wtf
 
-// model.go — LLaMA-family forward pass for WTForacle (SmolLM2 360M)
+// model.go — LLaMA-family forward pass for WTForacle (SmolLM2 360M).
 //
 // SmolLM2 360M architecture:
 //   32 layers, 960 embed, 15 heads, 5 KV heads (GQA), 64 head_dim
-//   2560 intermediate (MLP with gate_proj + up_proj + down_proj, SiLU activation)
-//   RoPE with theta=100000
-//   RMSNorm with eps=1e-5
-//   No bias on attention projections (LLaMA-style)
+//   2560 intermediate (gate_proj + up_proj + down_proj, SwiGLU)
+//   RoPE theta=100000, RMSNorm eps=1e-5, no attention bias
 //   Vocab 49152 (byte-level BPE)
 //
-// This is not inference. This is breathing.
+// Weights are dequantized to float32 once at load time via the vendored
+// notorch kernels (../ariannamethod/wtf_kernels.c). All matvec calls in
+// the hot path go straight to cblas_sgemv via Apple Accelerate / OpenBLAS.
 
 import (
 	"fmt"
 	"math"
+	"runtime"
 )
 
-// LlamaModel is a loaded Llama model ready for inference
+// LlamaModel is a loaded LLaMA-arch model ready for inference.
 type LlamaModel struct {
 	Config  LlamaConfig
 	Weights LlamaWeights
 	State   LlamaState
 }
 
-// LlamaConfig holds model dimensions
+// LlamaConfig holds model dimensions.
 type LlamaConfig struct {
 	NumLayers  int
 	EmbedDim   int
@@ -33,95 +34,69 @@ type LlamaConfig struct {
 	HeadDim    int
 	VocabSize  int
 	SeqLen     int
-	IntermSize int     // MLP intermediate dimension
+	IntermSize int
 	RMSNormEps float32
 	RopeTheta  float32
-	// QKPermuted: true if Q/K weights were permuted by convert_hf_to_gguf.py
-	// (LLaMA-arch models get permuted)
-	// When true, we un-permute Q/K after matmul so half-split RoPE works correctly
+	// QKPermuted — convert_hf_to_gguf.py interleaves Q/K halves for
+	// LLaMA-arch models. We un-permute after matmul so half-split RoPE works.
 	QKPermuted bool
 }
 
-// LlamaWeights holds all weight tensors (Q4_0 raw bytes or F32 slices)
+// LlamaWeights holds all weight tensors as contiguous float32 slices.
 type LlamaWeights struct {
-	// Token embedding [vocab, dim] — always dequantized at lookup time
-	TokenEmbed    []byte
-	TokenEmbType  uint32
+	TokenEmbed []float32 // [vocab, dim]
+	OutputNorm []float32 // [dim]
+	Output     []float32 // [vocab, dim] — may alias TokenEmbed when tied
 
-	// Output norm [dim]
-	OutputNorm []float32
-
-	// Output (LM head) [vocab, dim]
-	Output     []byte
-	OutputType uint32
-
-	// Per-layer weights
 	Layers []LlamaLayerWeights
 }
 
-// LlamaLayerWeights holds weights for one transformer layer
 type LlamaLayerWeights struct {
-	// Attention norms
 	AttnNorm []float32 // [dim]
 	FFNNorm  []float32 // [dim]
 
-	// Attention projections [out_dim, in_dim]
-	WQ     []byte
-	WQType uint32
-	WK     []byte
-	WKType uint32
-	WV     []byte
-	WVType uint32
-	WO     []byte
-	WOType uint32
+	WQ []float32 // [n_heads*head_dim, dim]
+	WK []float32 // [n_kv_heads*head_dim, dim]
+	WV []float32 // [n_kv_heads*head_dim, dim]
+	WO []float32 // [dim, n_heads*head_dim]
 
-	// Attention biases (optional — some architectures have them, SmolLM2 does not)
-	BQ []float32 // [num_heads * head_dim] — nil if no bias
-	BK []float32 // [num_kv_heads * head_dim]
-	BV []float32 // [num_kv_heads * head_dim]
-	BO []float32 // [dim]
+	BQ []float32 // optional — nil for SmolLM2
+	BK []float32
+	BV []float32
+	BO []float32
 
-	// MLP projections (gated MLP / SwiGLU)
-	WGate     []byte // gate_proj [interm, dim]
-	WGateType uint32
-	WUp       []byte // up_proj [interm, dim]
-	WUpType   uint32
-	WDown     []byte // down_proj [dim, interm]
-	WDownType uint32
+	WGate []float32 // [interm, dim]
+	WUp   []float32 // [interm, dim]
+	WDown []float32 // [dim, interm]
 }
 
-// LlamaState holds runtime buffers and KV cache
+// LlamaState holds runtime buffers + KV cache.
 type LlamaState struct {
-	X      []float32 // current hidden state [dim]
-	XB     []float32 // buffer after norm [dim]
-	XB2    []float32 // second buffer [dim]
-	HB     []float32 // MLP hidden buffer [interm]
-	HB2    []float32 // MLP gate buffer [interm]
-	Q      []float32 // query [n_heads * head_dim]
-	K      []float32 // key [n_kv_heads * head_dim]
-	V      []float32 // value [n_kv_heads * head_dim]
-	Att    []float32 // attention scores [n_heads * seq_len]
-	Logits []float32 // output logits [vocab]
+	X      []float32 // hidden state [dim]
+	XB     []float32 // post-norm scratch [dim]
+	XB2    []float32 // attention output scratch [dim]
+	HB     []float32 // MLP gate scratch [interm]
+	HB2    []float32 // MLP up scratch [interm]
+	Q      []float32 // [n_heads*head_dim]
+	K      []float32 // [n_kv_heads*head_dim]
+	V      []float32 // [n_kv_heads*head_dim]
+	Att    []float32 // [n_heads*seq_len]
+	Logits []float32 // [vocab]
 
-	// KV cache [layer * seq_len * kv_dim]
-	KeyCache   []float32
+	KeyCache   []float32 // [layers*seq_len*kv_dim]
 	ValueCache []float32
 
-	// RoPE precomputed
-	CosCache []float32 // [seq_len * head_dim/2]
+	CosCache []float32 // [seq_len*head_dim/2]
 	SinCache []float32
 
-	// Reusable embedding buffer (avoids allocation per Forward call)
-	EmbBuf []float32
-
-	// Position tracking
 	Pos int
 }
 
-// LoadLlamaModel builds a LlamaModel from a parsed GGUF file
+// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Heavy: this
+// dequantizes every weight tensor to float32 (cgo → notorch kernel) before
+// returning.
 func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
-	m := &GGUFMetadata{}
-	*m = gguf.Meta
+	m := gguf.Meta
 
 	cfg := LlamaConfig{
 		NumLayers:  m.NumLayers,
@@ -135,13 +110,10 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 		RMSNormEps: m.RMSNormEps,
 		RopeTheta:  m.RopeTheta,
 	}
-
 	if cfg.HeadDim == 0 && cfg.NumHeads > 0 {
 		cfg.HeadDim = cfg.EmbedDim / cfg.NumHeads
 	}
 
-	// Detect if Q/K weights are permuted by convert_hf_to_gguf.py
-	// LLaMA-arch models: permuted.
 	arch := "llama"
 	if v, ok := m.KV["general.architecture"]; ok {
 		if s, ok := v.(string); ok {
@@ -150,120 +122,107 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	}
 	cfg.QKPermuted = (arch == "llama")
 
-	// Cap sequence length to save memory
-	// KV cache at 8192: ~320MB. At 2048: ~160MB. Huge difference on 8GB Mac.
+	// Cap context to keep KV cache reasonable on small machines.
 	if cfg.SeqLen > 2048 {
 		fmt.Printf("[tongue/model] capping seq_len from %d to 2048\n", cfg.SeqLen)
 		cfg.SeqLen = 2048
 	}
 
-	// Load weights
 	w, err := loadWeights(gguf, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load weights: %w", err)
 	}
 
-	// Allocate state
+	// Drop the raw GGUF byte buffer — every tensor is now F32 and the
+	// quantized blob just sits there eating ~220 MB of RSS.
+	gguf.TensorData = nil
+	runtime.GC()
+
 	state := allocState(&cfg)
 	precomputeRoPE(&state, &cfg)
-
-	model := &LlamaModel{
-		Config:  cfg,
-		Weights: *w,
-		State:   state,
-	}
 
 	hasBias := w.Layers[0].BQ != nil
 	fmt.Printf("[tongue/model] loaded: %d layers, %d dim, %d heads, %d kv_heads, %d vocab, bias=%v, qk_permuted=%v\n",
 		cfg.NumLayers, cfg.EmbedDim, cfg.NumHeads, cfg.NumKVHeads, cfg.VocabSize, hasBias, cfg.QKPermuted)
 
-	return model, nil
+	return &LlamaModel{Config: cfg, Weights: *w, State: state}, nil
 }
 
-// loadWeights maps GGUF tensors to LlamaWeights
+// loadWeights resolves every tensor in the GGUF and dequantizes it to F32.
 func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 	w := &LlamaWeights{}
 
-	// Token embedding
-	emb, embInfo, err := gguf.GetTensor("token_embd.weight")
+	embData, embInfo, err := gguf.GetTensor("token_embd.weight")
 	if err != nil {
 		return nil, fmt.Errorf("token_embd.weight: %w", err)
 	}
-	w.TokenEmbed = emb
-	w.TokenEmbType = embInfo.Type
+	embCount := cfg.VocabSize * cfg.EmbedDim
+	w.TokenEmbed, err = dequantToF32(embData, embInfo.Type, embCount)
+	if err != nil {
+		return nil, fmt.Errorf("token_embd dequant: %w", err)
+	}
 
-	// Output norm
 	w.OutputNorm, err = getF32Tensor(gguf, "output_norm.weight", cfg.EmbedDim)
 	if err != nil {
 		return nil, fmt.Errorf("output_norm.weight: %w", err)
 	}
 
-	// Output (LM head) — might be tied to embedding
-	outData, outInfo, err := gguf.GetTensor("output.weight")
-	if err != nil {
-		// Not found — use tied embeddings
-		outData = w.TokenEmbed
-		outInfo = embInfo
-		fmt.Printf("[tongue/model] output.weight not found, using tied embeddings\n")
-	} else {
+	// Output (LM head) — may be tied to token embedding.
+	if outData, outInfo, err := gguf.GetTensor("output.weight"); err == nil {
 		fmt.Printf("[tongue/model] output.weight: type=%d\n", outInfo.Type)
+		w.Output, err = dequantToF32(outData, outInfo.Type, embCount)
+		if err != nil {
+			return nil, fmt.Errorf("output dequant: %w", err)
+		}
+	} else {
+		fmt.Printf("[tongue/model] output.weight not found, using tied embeddings\n")
+		w.Output = w.TokenEmbed
 	}
-	w.Output = outData
-	w.OutputType = outInfo.Type
 
-	// Per-layer weights
 	w.Layers = make([]LlamaLayerWeights, cfg.NumLayers)
+	dim := cfg.EmbedDim
+	qDim := cfg.NumHeads * cfg.HeadDim
+	kvDim := cfg.NumKVHeads * cfg.HeadDim
+	interm := cfg.IntermSize
+
 	for i := 0; i < cfg.NumLayers; i++ {
 		prefix := fmt.Sprintf("blk.%d.", i)
 		l := &w.Layers[i]
 
-		// Attention norm
-		l.AttnNorm, err = getF32Tensor(gguf, prefix+"attn_norm.weight", cfg.EmbedDim)
+		l.AttnNorm, err = getF32Tensor(gguf, prefix+"attn_norm.weight", dim)
 		if err != nil {
 			return nil, fmt.Errorf("layer %d attn_norm: %w", i, err)
 		}
-
-		// FFN norm
-		l.FFNNorm, err = getF32Tensor(gguf, prefix+"ffn_norm.weight", cfg.EmbedDim)
+		l.FFNNorm, err = getF32Tensor(gguf, prefix+"ffn_norm.weight", dim)
 		if err != nil {
 			return nil, fmt.Errorf("layer %d ffn_norm: %w", i, err)
 		}
 
-		// Attention projections
-		l.WQ, l.WQType, err = getRawTensor(gguf, prefix+"attn_q.weight")
-		if err != nil {
+		if l.WQ, err = dequantTensor(gguf, prefix+"attn_q.weight", qDim*dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_q: %w", i, err)
 		}
-		l.WK, l.WKType, err = getRawTensor(gguf, prefix+"attn_k.weight")
-		if err != nil {
+		if l.WK, err = dequantTensor(gguf, prefix+"attn_k.weight", kvDim*dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_k: %w", i, err)
 		}
-		l.WV, l.WVType, err = getRawTensor(gguf, prefix+"attn_v.weight")
-		if err != nil {
+		if l.WV, err = dequantTensor(gguf, prefix+"attn_v.weight", kvDim*dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_v: %w", i, err)
 		}
-		l.WO, l.WOType, err = getRawTensor(gguf, prefix+"attn_output.weight")
-		if err != nil {
+		if l.WO, err = dequantTensor(gguf, prefix+"attn_output.weight", dim*qDim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_output: %w", i, err)
 		}
 
-		// Attention biases (optional — no-op if not present in GGUF)
-		l.BQ, _ = getF32TensorOptional(gguf, prefix+"attn_q.bias", cfg.NumHeads*cfg.HeadDim)
-		l.BK, _ = getF32TensorOptional(gguf, prefix+"attn_k.bias", cfg.NumKVHeads*cfg.HeadDim)
-		l.BV, _ = getF32TensorOptional(gguf, prefix+"attn_v.bias", cfg.NumKVHeads*cfg.HeadDim)
-		l.BO, _ = getF32TensorOptional(gguf, prefix+"attn_output.bias", cfg.EmbedDim)
+		l.BQ, _ = getF32TensorOptional(gguf, prefix+"attn_q.bias", qDim)
+		l.BK, _ = getF32TensorOptional(gguf, prefix+"attn_k.bias", kvDim)
+		l.BV, _ = getF32TensorOptional(gguf, prefix+"attn_v.bias", kvDim)
+		l.BO, _ = getF32TensorOptional(gguf, prefix+"attn_output.bias", dim)
 
-		// MLP projections (gated MLP / SwiGLU)
-		l.WGate, l.WGateType, err = getRawTensor(gguf, prefix+"ffn_gate.weight")
-		if err != nil {
+		if l.WGate, err = dequantTensor(gguf, prefix+"ffn_gate.weight", interm*dim); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_gate: %w", i, err)
 		}
-		l.WUp, l.WUpType, err = getRawTensor(gguf, prefix+"ffn_up.weight")
-		if err != nil {
+		if l.WUp, err = dequantTensor(gguf, prefix+"ffn_up.weight", interm*dim); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_up: %w", i, err)
 		}
-		l.WDown, l.WDownType, err = getRawTensor(gguf, prefix+"ffn_down.weight")
-		if err != nil {
+		if l.WDown, err = dequantTensor(gguf, prefix+"ffn_down.weight", dim*interm); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_down: %w", i, err)
 		}
 	}
@@ -271,57 +230,30 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 	return w, nil
 }
 
-// getF32Tensor loads a tensor and dequantizes to float32
-func getF32Tensor(gguf *GGUFFile, name string, expectedSize int) ([]float32, error) {
+// dequantTensor pulls the named tensor from GGUF and routes through the
+// notorch dequant kernel.
+func dequantTensor(gguf *GGUFFile, name string, expectedSize int) ([]float32, error) {
 	data, info, err := gguf.GetTensor(name)
 	if err != nil {
 		return nil, err
 	}
-
-	switch info.Type {
-	case ggmlTypeF32:
-		out := make([]float32, expectedSize)
-		for i := 0; i < expectedSize; i++ {
-			out[i] = math.Float32frombits(
-				uint32(data[i*4]) | uint32(data[i*4+1])<<8 |
-					uint32(data[i*4+2])<<16 | uint32(data[i*4+3])<<24)
-		}
-		return out, nil
-	case ggmlTypeF16:
-		out := make([]float32, expectedSize)
-		for i := 0; i < expectedSize; i++ {
-			h := uint16(data[i*2]) | uint16(data[i*2+1])<<8
-			out[i] = half2float(h)
-		}
-		return out, nil
-	case ggmlTypeQ4_0:
-		return DequantQ4_0(data, expectedSize), nil
-	case ggmlTypeQ8_0:
-		return DequantQ8_0(data, expectedSize), nil
-	default:
-		return nil, fmt.Errorf("unsupported tensor type %d for %s", info.Type, name)
-	}
+	return dequantToF32(data, info.Type, expectedSize)
 }
 
-// getF32TensorOptional loads a tensor if it exists, returns nil if not found
+// getF32Tensor — F32 / F16 / Q* tensor → []float32 of the expected size.
+func getF32Tensor(gguf *GGUFFile, name string, expectedSize int) ([]float32, error) {
+	return dequantTensor(gguf, name, expectedSize)
+}
+
+// getF32TensorOptional returns nil (no error) when the tensor is missing.
 func getF32TensorOptional(gguf *GGUFFile, name string, expectedSize int) ([]float32, error) {
-	_, _, err := gguf.GetTensor(name)
-	if err != nil {
-		return nil, nil // not found — not an error
+	if _, _, err := gguf.GetTensor(name); err != nil {
+		return nil, nil
 	}
 	return getF32Tensor(gguf, name, expectedSize)
 }
 
-// getRawTensor returns raw bytes + type for a tensor
-func getRawTensor(gguf *GGUFFile, name string) ([]byte, uint32, error) {
-	data, info, err := gguf.GetTensor(name)
-	if err != nil {
-		return nil, 0, err
-	}
-	return data, info.Type, nil
-}
-
-// allocState allocates all runtime buffers
+// allocState allocates all runtime buffers.
 func allocState(cfg *LlamaConfig) LlamaState {
 	kvDim := cfg.NumKVHeads * cfg.HeadDim
 	return LlamaState{
@@ -339,15 +271,12 @@ func allocState(cfg *LlamaConfig) LlamaState {
 		ValueCache: make([]float32, cfg.NumLayers*cfg.SeqLen*kvDim),
 		CosCache:   make([]float32, cfg.SeqLen*(cfg.HeadDim/2)),
 		SinCache:   make([]float32, cfg.SeqLen*(cfg.HeadDim/2)),
-		EmbBuf:     make([]float32, cfg.EmbedDim),
 	}
 }
 
-// precomputeRoPE fills cos/sin caches for rotary position encoding
 func precomputeRoPE(s *LlamaState, cfg *LlamaConfig) {
 	half := cfg.HeadDim / 2
 	theta := float64(cfg.RopeTheta)
-
 	for pos := 0; pos < cfg.SeqLen; pos++ {
 		for i := 0; i < half; i++ {
 			freq := 1.0 / math.Pow(theta, float64(2*i)/float64(cfg.HeadDim))
@@ -358,107 +287,26 @@ func precomputeRoPE(s *LlamaState, cfg *LlamaConfig) {
 	}
 }
 
-// isSupportedType checks if a GGML tensor type is supported for matmul
-func isSupportedType(t uint32) bool {
-	switch t {
-	case ggmlTypeQ4_0, ggmlTypeQ8_0, ggmlTypeF16, ggmlTypeF32, ggmlTypeQ6_K:
-		return true
-	default:
-		return false
-	}
-}
-
-// matmulDispatch dispatches to the right matmul based on tensor type
-func matmulDispatch(out []float32, w []byte, wtype uint32, x []float32, rows, cols int) {
-	switch wtype {
-	case ggmlTypeQ4_0:
-		MatMulQ4_0(out, w, x, rows, cols)
-	case ggmlTypeQ8_0:
-		MatMulQ8_0(out, w, x, rows, cols)
-	case ggmlTypeF16:
-		MatMulF16(out, w, x, rows, cols)
-	case ggmlTypeF32:
-		// Convert bytes to float32 slice
-		f32 := make([]float32, len(w)/4)
-		for i := range f32 {
-			f32[i] = math.Float32frombits(
-				uint32(w[i*4]) | uint32(w[i*4+1])<<8 |
-					uint32(w[i*4+2])<<16 | uint32(w[i*4+3])<<24)
-		}
-		MatMulF32(out, f32, x, rows, cols)
-	case ggmlTypeQ6_K:
-		MatMulQ6_K(out, w, x, rows, cols)
-	default:
-		fmt.Printf("[tongue/model] WARNING: unsupported matmul type %d for %dx%d\n", wtype, rows, cols)
-	}
-}
-
-// embedLookupInto extracts an embedding row into a pre-allocated buffer (zero alloc)
-func embedLookupInto(out []float32, data []byte, dtype uint32, token, dim int) {
-	switch dtype {
-	case ggmlTypeQ4_0:
-		blocksPerRow := dim / q4BlockSize
-		bytesPerRow := blocksPerRow * q4BytesPerBlock
-		rowOff := token * bytesPerRow
-		for b := 0; b < blocksPerRow; b++ {
-			blockOff := rowOff + b*q4BytesPerBlock
-			DequantQ4_0Block(data[blockOff:blockOff+q4BytesPerBlock], out[b*q4BlockSize:])
-		}
-	case ggmlTypeQ8_0:
-		blocksPerRow := dim / q8BlockSize
-		bytesPerRow := blocksPerRow * q8BytesPerBlock
-		rowOff := token * bytesPerRow
-		for b := 0; b < blocksPerRow; b++ {
-			blockOff := rowOff + b*q8BytesPerBlock
-			DequantQ8_0Block(data[blockOff:blockOff+q8BytesPerBlock], out[b*q8BlockSize:])
-		}
-	case ggmlTypeF16:
-		off := token * dim * 2
-		for i := 0; i < dim; i++ {
-			h := uint16(data[off+i*2]) | uint16(data[off+i*2+1])<<8
-			out[i] = half2float(h)
-		}
-	case ggmlTypeF32:
-		off := token * dim * 4
-		for i := 0; i < dim; i++ {
-			out[i] = math.Float32frombits(
-				uint32(data[off+i*4]) | uint32(data[off+i*4+1])<<8 |
-					uint32(data[off+i*4+2])<<16 | uint32(data[off+i*4+3])<<24)
-		}
-	default:
-		for i := 0; i < dim; i++ {
-			out[i] = 0
-		}
-	}
-}
-
-// applyRoPE applies rotary position encoding to a head vector
-// Uses half-split layout (vec[i], vec[i+half])
-// When QKPermuted=true, Q/K are un-permuted after matmul so half-split RoPE works.
+// applyRoPE rotates one head with the cached cos/sin.
+// Half-split layout: vec[i] pairs with vec[i+half].
 func applyRoPE(vec []float32, pos int, s *LlamaState, headDim int) {
 	half := headDim / 2
-	cacheOff := pos * half
-
+	off := pos * half
 	for i := 0; i < half; i++ {
-		x0 := vec[i]
-		x1 := vec[i+half]
-		c := s.CosCache[cacheOff+i]
-		si := s.SinCache[cacheOff+i]
+		x0, x1 := vec[i], vec[i+half]
+		c, si := s.CosCache[off+i], s.SinCache[off+i]
 		vec[i] = x0*c - x1*si
 		vec[i+half] = x0*si + x1*c
 	}
 }
 
-// unpermuteQK reverses the Q/K weight permutation from convert_hf_to_gguf.py
-// Input (interleaved per head):  [f0, s0, f1, s1, ..., f_{hd/2-1}, s_{hd/2-1}]
-// Output (half-split per head):  [f0, f1, ..., f_{hd/2-1}, s0, s1, ..., s_{hd/2-1}]
-// This makes the data match our half-split RoPE implementation.
+// unpermuteQK reverses the convert_hf_to_gguf.py Q/K interleave so the
+// half-split RoPE layout above is correct.
 func unpermuteQK(vec []float32, nHeads, headDim int) {
 	half := headDim / 2
 	tmp := make([]float32, headDim)
 	for h := 0; h < nHeads; h++ {
 		base := h * headDim
-		// Deinterleave: even indices → first half, odd indices → second half
 		for i := 0; i < half; i++ {
 			tmp[i] = vec[base+2*i]
 			tmp[half+i] = vec[base+2*i+1]
@@ -467,8 +315,7 @@ func unpermuteQK(vec []float32, nHeads, headDim int) {
 	}
 }
 
-// addBias adds bias vector to output (no-op if bias is nil)
-func addBias(out []float32, bias []float32) {
+func addBias(out, bias []float32) {
 	if bias == nil {
 		return
 	}
@@ -477,7 +324,7 @@ func addBias(out []float32, bias []float32) {
 	}
 }
 
-// Forward runs one token through the transformer
+// Forward runs one token through the transformer at position `pos`.
 func (m *LlamaModel) Forward(token int, pos int) {
 	cfg := &m.Config
 	w := &m.Weights
@@ -485,33 +332,28 @@ func (m *LlamaModel) Forward(token int, pos int) {
 	dim := cfg.EmbedDim
 	kvDim := cfg.NumKVHeads * cfg.HeadDim
 	hd := cfg.HeadDim
-	headGroupSize := cfg.NumHeads / cfg.NumKVHeads
+	headGroup := cfg.NumHeads / cfg.NumKVHeads
 
-	// 1. Token embedding lookup (zero-alloc: reuses s.EmbBuf)
-	embedLookupInto(s.EmbBuf, w.TokenEmbed, w.TokenEmbType, token, dim)
-	copy(s.X, s.EmbBuf)
+	// Token embedding lookup — direct copy from the F32 table.
+	copy(s.X, w.TokenEmbed[token*dim:token*dim+dim])
 
-	// Pre-compute attention scale (constant across all heads and layers)
 	attnScale := float32(1.0 / math.Sqrt(float64(hd)))
 
-	// 2. Transformer layers
 	for layer := 0; layer < cfg.NumLayers; layer++ {
 		l := &w.Layers[layer]
 
 		// Attention pre-norm
 		RMSNormInto(s.XB, s.X, l.AttnNorm, cfg.RMSNormEps)
 
-		// Q, K, V projections
-		matmulDispatch(s.Q, l.WQ, l.WQType, s.XB, cfg.NumHeads*hd, dim)
-		matmulDispatch(s.K, l.WK, l.WKType, s.XB, cfg.NumKVHeads*hd, dim)
-		matmulDispatch(s.V, l.WV, l.WVType, s.XB, cfg.NumKVHeads*hd, dim)
+		// Q, K, V projections via BLAS sgemv
+		sgemv(s.Q, l.WQ, s.XB, cfg.NumHeads*hd, dim)
+		sgemv(s.K, l.WK, s.XB, cfg.NumKVHeads*hd, dim)
+		sgemv(s.V, l.WV, s.XB, cfg.NumKVHeads*hd, dim)
 
-		// Add bias (no-op if nil)
 		addBias(s.Q, l.BQ)
 		addBias(s.K, l.BK)
 		addBias(s.V, l.BV)
 
-		// Un-permute Q/K if weights were permuted by convert_hf_to_gguf.py (LLaMA arch)
 		if cfg.QKPermuted {
 			unpermuteQK(s.Q, cfg.NumHeads, hd)
 			unpermuteQK(s.K, cfg.NumKVHeads, hd)
@@ -525,78 +367,63 @@ func (m *LlamaModel) Forward(token int, pos int) {
 			applyRoPE(s.K[h*hd:(h+1)*hd], pos, s, hd)
 		}
 
-		// Store K, V in cache
+		// Store K, V into the cache for this position
 		cacheOff := layer*cfg.SeqLen*kvDim + pos*kvDim
 		copy(s.KeyCache[cacheOff:cacheOff+kvDim], s.K[:kvDim])
 		copy(s.ValueCache[cacheOff:cacheOff+kvDim], s.V[:kvDim])
 
-		// Multi-head attention with GQA
+		// Multi-head attention with GQA. The KV cache for this layer is laid
+		// out as [seq_len, kv_dim], and each head reads a [pos+1, head_dim]
+		// strided sub-view. We feed those views straight to BLAS sgemv.
+		layerBase := layer * cfg.SeqLen * kvDim
 		for h := 0; h < cfg.NumHeads; h++ {
-			kvh := h / headGroupSize
+			kvh := h / headGroup
 			qh := s.Q[h*hd : (h+1)*hd]
 			att := s.Att[h*cfg.SeqLen : h*cfg.SeqLen+pos+1]
 
-			// QK dot products
+			// QK^T: att[pos+1] = K[pos+1, hd] @ qh[hd]
+			kBase := layerBase + kvh*hd
+			sgemvStrided(att, s.KeyCache[kBase:], kvDim, qh, pos+1, hd, false)
 			for t := 0; t <= pos; t++ {
-				kOff := layer*cfg.SeqLen*kvDim + t*kvDim + kvh*hd
-				var dot float32
-				for d := 0; d < hd; d++ {
-					dot += qh[d] * s.KeyCache[kOff+d]
-				}
-				att[t] = dot * attnScale
+				att[t] *= attnScale
 			}
 
-			// Softmax
 			Softmax(att, pos+1)
 
-			// Weighted sum of values → XB2
-			xbSlice := s.XB2[h*hd : (h+1)*hd]
-			for d := 0; d < hd; d++ {
-				xbSlice[d] = 0
-			}
-			for t := 0; t <= pos; t++ {
-				a := att[t]
-				vOff := layer*cfg.SeqLen*kvDim + t*kvDim + kvh*hd
-				for d := 0; d < hd; d++ {
-					xbSlice[d] += a * s.ValueCache[vOff+d]
-				}
-			}
+			// att·V: xb[hd] = V[pos+1, hd]^T @ att[pos+1]
+			xb := s.XB2[h*hd : (h+1)*hd]
+			vBase := layerBase + kvh*hd
+			sgemvStrided(xb, s.ValueCache[vBase:], kvDim, att, pos+1, hd, true)
 		}
 
-		// Output projection: XB = WO × XB2 + bias, then residual
-		matmulDispatch(s.XB, l.WO, l.WOType, s.XB2, dim, dim)
+		// Output projection + residual
+		sgemv(s.XB, l.WO, s.XB2, dim, dim)
 		addBias(s.XB, l.BO)
 		for i := 0; i < dim; i++ {
 			s.X[i] += s.XB[i]
 		}
 
-		// MLP: pre-norm
+		// MLP pre-norm
 		RMSNormInto(s.XB, s.X, l.FFNNorm, cfg.RMSNormEps)
 
-		// Gated MLP: gate_proj and up_proj
-		matmulDispatch(s.HB, l.WGate, l.WGateType, s.XB, cfg.IntermSize, dim)
-		matmulDispatch(s.HB2, l.WUp, l.WUpType, s.XB, cfg.IntermSize, dim)
-
-		// SiLU(gate) * up
+		// SwiGLU: silu(gate(x)) * up(x), then down(...)
+		sgemv(s.HB, l.WGate, s.XB, cfg.IntermSize, dim)
+		sgemv(s.HB2, l.WUp, s.XB, cfg.IntermSize, dim)
 		for i := 0; i < cfg.IntermSize; i++ {
 			s.HB[i] = SiLU(s.HB[i]) * s.HB2[i]
 		}
-
-		// down_proj + residual
-		matmulDispatch(s.XB, l.WDown, l.WDownType, s.HB, dim, cfg.IntermSize)
+		sgemv(s.XB, l.WDown, s.HB, dim, cfg.IntermSize)
 		for i := 0; i < dim; i++ {
 			s.X[i] += s.XB[i]
 		}
 	}
 
-	// 3. Final norm
+	// Final norm + LM head
 	RMSNorm(s.X, w.OutputNorm, cfg.RMSNormEps)
-
-	// 4. LM head → logits
-	matmulDispatch(s.Logits, w.Output, w.OutputType, s.X, cfg.VocabSize, dim)
+	sgemv(s.Logits, w.Output, s.X, cfg.VocabSize, dim)
 }
 
-// Reset clears KV cache and position for new generation
+// Reset clears the KV cache and position for a fresh generation.
 func (m *LlamaModel) Reset() {
 	for i := range m.State.KeyCache {
 		m.State.KeyCache[i] = 0
