@@ -432,6 +432,13 @@ void nt_blas_mm(float *C, const float *A, const float *B, int m, int k, int n);
 // (Accelerate / OpenBLAS); without BLAS falls back to the naive nested loop.
 void nt_blas_matvec(float *out, const float *W, const float *x, int m, int n);
 
+// Packed quantized matvec: out[m] = Wq[m,k] @ x[k] with weights kept PACKED
+// (no dense-f32 blow-up), dequantized inline per block. dtype = GGUF type code
+// (Q4_0/Q5_0/Q8_0/Q4_K/Q6_K). Returns 0 on success, -1 if the dtype has no
+// packed kernel yet. Vendored from canonical notorch (feat/nt-qmatvec-packed).
+int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
+               const float *x, int m, int k);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROFILER — op timing + memory tracking
 // ═══════════════════════════════════════════════════════════════════════════════
