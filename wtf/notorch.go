@@ -11,7 +11,7 @@ package wtf
 // notorch.c is built with USE_BLAS so nt_blas_matvec routes to cblas_sgemv.
 
 /*
-#cgo CFLAGS: -O3 -DUSE_BLAS -I${SRCDIR}/../ariannamethod
+#cgo CFLAGS: -O3 -DUSE_BLAS -pthread -I${SRCDIR}/../ariannamethod
 #cgo darwin CFLAGS: -DACCELERATE -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations
 #cgo darwin LDFLAGS: -framework Accelerate
 #cgo linux LDFLAGS: -lopenblas

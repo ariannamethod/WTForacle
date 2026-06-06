@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <float.h>
+#include <pthread.h>
+#include <unistd.h>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLAS BACKEND
@@ -3553,31 +3555,72 @@ static void nt_f16_rows(float *out, const uint8_t *W, const float *x,
     }
 }
 
+static void nt_f32_rows(float *out, const uint8_t *W, const float *x,
+                        int r0, int r1, int k) {
+    const float *Wf = (const float *)W;
+    for (int row = r0; row < r1; row++) {
+        const float *r = Wf + (long)row * k;
+        float acc = 0.0f;
+        for (int j = 0; j < k; j++) acc += r[j] * x[j];
+        out[row] = acc;
+    }
+}
+
+typedef void (*nt_qrows_fn)(float *, const uint8_t *, const float *, int, int, int);
+
+static nt_qrows_fn nt_qrows_for(int dtype, int k) {
+    switch (dtype) {
+    case 0:  return nt_f32_rows;
+    case 1:  return nt_f16_rows;
+    case 2:  return (k % 32)  ? NULL : nt_q4_0_rows;
+    case 6:  return (k % 32)  ? NULL : nt_q5_0_rows;
+    case 8:  return (k % 32)  ? NULL : nt_q8_0_rows;
+    case 12: return (k % 256) ? NULL : nt_q4_k_rows;
+    case 14: return (k % 256) ? NULL : nt_q6_k_rows;
+    default: return NULL;
+    }
+}
+
+#define NT_QMV_MAX_THREADS 16
+
+typedef struct {
+    nt_qrows_fn fn; float *out; const uint8_t *Wq; const float *x;
+    int r0, r1, k;
+} nt_qjob;
+
+static void *nt_qworker(void *p) {
+    nt_qjob *j = (nt_qjob *)p;
+    j->fn(j->out, j->Wq, j->x, j->r0, j->r1, j->k);
+    return NULL;
+}
+
+// Packed quantized matvec, parallelized across rows. dtype = GGUF type code.
 int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
                const float *x, int m, int k) {
-    switch (dtype) {
-    case 0: { /* GGUF_TYPE_F32 — already dense f32, plain dot (agnostic entry) */
-        const float *Wf = (const float *)Wq;
-        for (int row = 0; row < m; row++) {
-            const float *r = Wf + (long)row * k;
-            float acc = 0.0f;
-            for (int j = 0; j < k; j++) acc += r[j] * x[j];
-            out[row] = acc;
+    nt_qrows_fn fn = nt_qrows_for(dtype, k);
+    if (!fn) return -1;
+
+    int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (nt < 1) nt = 1;
+    if (nt > NT_QMV_MAX_THREADS) nt = NT_QMV_MAX_THREADS;
+    if (nt > m) nt = m;
+    // Gated high: per-call spawn + 2P+4E asymmetry make fan-out counterproductive for
+    // small single-token decode matvecs; only large matvecs (big models / batched) thread.
+    if (nt <= 1 || (long)m * k < (4L << 20)) { fn(out, Wq, x, 0, m, k); return 0; }
+
+    pthread_t th[NT_QMV_MAX_THREADS];
+    nt_qjob   jobs[NT_QMV_MAX_THREADS];
+    int per = (m + nt - 1) / nt, launched = 0;
+    for (int t = 0; t < nt; t++) {
+        int r0 = t * per, r1 = (r0 + per > m) ? m : r0 + per;
+        if (r0 >= m) break;
+        jobs[t] = (nt_qjob){ fn, out, Wq, x, r0, r1, k };
+        if (pthread_create(&th[t], NULL, nt_qworker, &jobs[t]) != 0) {
+            fn(out, Wq, x, r0, m, k);
+            break;
         }
-        return 0;
+        launched++;
     }
-    case 1:  /* GGUF_TYPE_F16  */ nt_f16_rows (out, Wq, x, 0, m, k); return 0;
-    case 2:  /* GGUF_TYPE_Q4_0 */ if (k % 32)  return -1;
-        nt_q4_0_rows(out, Wq, x, 0, m, k); return 0;
-    case 6:  /* GGUF_TYPE_Q5_0 */ if (k % 32)  return -1;
-        nt_q5_0_rows(out, Wq, x, 0, m, k); return 0;
-    case 8:  /* GGUF_TYPE_Q8_0 */ if (k % 32)  return -1;
-        nt_q8_0_rows(out, Wq, x, 0, m, k); return 0;
-    case 12: /* GGUF_TYPE_Q4_K */ if (k % 256) return -1;
-        nt_q4_k_rows(out, Wq, x, 0, m, k); return 0;
-    case 14: /* GGUF_TYPE_Q6_K */ if (k % 256) return -1;
-        nt_q6_k_rows(out, Wq, x, 0, m, k); return 0;
-    default:
-        return -1;
-    }
+    for (int t = 0; t < launched; t++) pthread_join(th[t], NULL);
+    return 0;
 }
