@@ -42,6 +42,12 @@ void wtf_sgemv(float* out, const float* W, const float* x, int m, int n);
 void wtf_sgemv_strided(float* out, const float* W, int lda,
                        const float* x, int m, int n, int trans);
 
+// out[m] = Wq[m,k] @ x[k] — PACKED quantized matvec via notorch nt_qmatvec.
+// Weights stay packed (raw GGUF bytes), dequantized inline per block; no f32
+// blow-up. dtype = GGML type tag (WTF_DTYPE_*). Returns 0 ok, -1 unsupported.
+int wtf_qmatvec(float* out, const uint8_t* Wq, int dtype,
+                const float* x, int m, int k);
+
 #ifdef __cplusplus
 }
 #endif

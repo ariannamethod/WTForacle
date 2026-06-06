@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <float.h>
+#include <pthread.h>
+#include <unistd.h>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLAS BACKEND
@@ -3394,4 +3396,231 @@ void nt_blas_matvec(float *out, const float *W, const float *x, int m, int n) {
         out[i] = s;
     }
 #endif
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PACKED QUANTIZED MATVEC — out[m] = Wq[m,k] @ x[k], weights stay packed
+// ═══════════════════════════════════════════════════════════════════════════════
+// Vendored from canonical notorch (feat/nt-qmatvec-packed). Keeps weights packed
+// in RAM, dequantizes each block inline — same math as gguf_dequant -> matvec, a
+// fraction of the memory. dtype = GGUF type code. Phase 1: single-threaded.
+
+static float nt_f16_to_f32(uint16_t h) {
+    uint32_t s = (h >> 15) & 1, e = (h >> 10) & 0x1F, m = h & 0x3FF, bits;
+    if (e == 0) {
+        if (m == 0) bits = s << 31;
+        else { e = 127 - 15 + 1; while (!(m & 0x400)) { m <<= 1; e--; } m &= 0x3FF;
+               bits = (s << 31) | (e << 23) | (m << 13); }
+    } else if (e == 0x1F) bits = (s << 31) | (0xFFu << 23) | (m << 13);
+    else bits = (s << 31) | ((e - 15 + 127) << 23) | (m << 13);
+    float f; memcpy(&f, &bits, 4); return f;
+}
+
+static void nt_q4_0_rows(float *out, const uint8_t *W, const float *x,
+                         int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 18;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 18;
+            float d = nt_f16_to_f32((uint16_t)(b[0] | (b[1] << 8)));
+            const float *xb = x + (long)blk * 32;
+            for (int i = 0; i < 16; i++) {
+                int lo = (int)(b[2 + i] & 0x0F) - 8;
+                int hi = (int)(b[2 + i] >> 4)   - 8;
+                acc += d * (float)lo * xb[i];
+                acc += d * (float)hi * xb[i + 16];
+            }
+        }
+        out[row] = acc;
+    }
+}
+
+static void nt_q8_0_rows(float *out, const uint8_t *W, const float *x,
+                         int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 34;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 34;
+            float d = nt_f16_to_f32((uint16_t)(b[0] | (b[1] << 8)));
+            const float *xb = x + (long)blk * 32;
+            for (int i = 0; i < 32; i++)
+                acc += d * (float)(int8_t)b[2 + i] * xb[i];
+        }
+        out[row] = acc;
+    }
+}
+
+static void nt_q5_0_rows(float *out, const uint8_t *W, const float *x,
+                         int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 22;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 22;
+            float d = nt_f16_to_f32((uint16_t)(b[0] | (b[1] << 8)));
+            uint32_t qh = (uint32_t)b[2] | ((uint32_t)b[3] << 8) |
+                          ((uint32_t)b[4] << 16) | ((uint32_t)b[5] << 24);
+            const uint8_t *qs = b + 6;
+            const float *xb = x + (long)blk * 32;
+            for (int j = 0; j < 16; j++) {
+                int lo = qs[j] & 0x0F, hi = qs[j] >> 4;
+                int hb0 = (qh >> j) & 1, hb1 = (qh >> (j + 16)) & 1;
+                acc += d * (float)((lo | (hb0 << 4)) - 16) * xb[j];
+                acc += d * (float)((hi | (hb1 << 4)) - 16) * xb[j + 16];
+            }
+        }
+        out[row] = acc;
+    }
+}
+
+static void nt_get_scale_min_k4(int j, const uint8_t *sc, uint8_t *s, uint8_t *mn) {
+    if (j < 4) { *s = sc[j] & 63; *mn = sc[j + 4] & 63; }
+    else { *s = (sc[j + 4] & 0x0F) | ((sc[j - 4] >> 6) << 4);
+           *mn = (sc[j + 4] >> 4)  | ((sc[j]     >> 6) << 4); }
+}
+
+static void nt_q4_k_rows(float *out, const uint8_t *W, const float *x,
+                         int r0, int r1, int k) {
+    int nb = k / 256;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 144;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 144;
+            float d    = nt_f16_to_f32((uint16_t)(b[0] | (b[1] << 8)));
+            float dmin = nt_f16_to_f32((uint16_t)(b[2] | (b[3] << 8)));
+            const uint8_t *sc = b + 4, *qs = b + 16;
+            const float *xb = x + (long)blk * 256;
+            int is = 0, qi = 0;
+            for (int j = 0; j < 256; j += 64) {
+                uint8_t sc0, m0, sc1, m1;
+                nt_get_scale_min_k4(is,     sc, &sc0, &m0);
+                nt_get_scale_min_k4(is + 1, sc, &sc1, &m1);
+                float d1 = d * sc0, mm1 = dmin * m0, d2 = d * sc1, mm2 = dmin * m1;
+                for (int l = 0; l < 32; l++)
+                    acc += (d1 * (float)(qs[qi + l] & 0x0F) - mm1) * xb[j + l];
+                for (int l = 0; l < 32; l++)
+                    acc += (d2 * (float)(qs[qi + l] >> 4)   - mm2) * xb[j + 32 + l];
+                qi += 32; is += 2;
+            }
+        }
+        out[row] = acc;
+    }
+}
+
+static void nt_q6_k_rows(float *out, const uint8_t *W, const float *x,
+                         int r0, int r1, int k) {
+    int nb = k / 256;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 210;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 210, *ql = b, *qh = b + 128;
+            const int8_t *sc = (const int8_t *)(b + 192);
+            float d = nt_f16_to_f32((uint16_t)(b[208] | (b[209] << 8)));
+            const float *xb = x + (long)blk * 256;
+            for (int n = 0; n < 256; n += 128) {
+                const uint8_t *qlh = ql + (n / 128) * 64, *qhh = qh + (n / 128) * 32;
+                const int8_t *sch = sc + (n / 128) * 8;
+                for (int l = 0; l < 32; l++) {
+                    int is = l / 16;
+                    int q1 = (int)((qlh[l]      & 0x0F) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                    int q2 = (int)((qlh[l + 32] & 0x0F) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                    int q3 = (int)((qlh[l]      >> 4)   | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                    int q4 = (int)((qlh[l + 32] >> 4)   | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                    acc += d * sch[is + 0] * q1 * xb[n + l];
+                    acc += d * sch[is + 2] * q2 * xb[n + l + 32];
+                    acc += d * sch[is + 4] * q3 * xb[n + l + 64];
+                    acc += d * sch[is + 6] * q4 * xb[n + l + 96];
+                }
+            }
+        }
+        out[row] = acc;
+    }
+}
+
+static void nt_f16_rows(float *out, const uint8_t *W, const float *x,
+                        int r0, int r1, int k) {
+    const uint16_t *Wh = (const uint16_t *)W;
+    for (int row = r0; row < r1; row++) {
+        const uint16_t *r = Wh + (long)row * k;
+        float acc = 0.0f;
+        for (int j = 0; j < k; j++) acc += nt_f16_to_f32(r[j]) * x[j];
+        out[row] = acc;
+    }
+}
+
+static void nt_f32_rows(float *out, const uint8_t *W, const float *x,
+                        int r0, int r1, int k) {
+    const float *Wf = (const float *)W;
+    for (int row = r0; row < r1; row++) {
+        const float *r = Wf + (long)row * k;
+        float acc = 0.0f;
+        for (int j = 0; j < k; j++) acc += r[j] * x[j];
+        out[row] = acc;
+    }
+}
+
+typedef void (*nt_qrows_fn)(float *, const uint8_t *, const float *, int, int, int);
+
+static nt_qrows_fn nt_qrows_for(int dtype, int k) {
+    switch (dtype) {
+    case 0:  return nt_f32_rows;
+    case 1:  return nt_f16_rows;
+    case 2:  return (k % 32)  ? NULL : nt_q4_0_rows;
+    case 6:  return (k % 32)  ? NULL : nt_q5_0_rows;
+    case 8:  return (k % 32)  ? NULL : nt_q8_0_rows;
+    case 12: return (k % 256) ? NULL : nt_q4_k_rows;
+    case 14: return (k % 256) ? NULL : nt_q6_k_rows;
+    default: return NULL;
+    }
+}
+
+#define NT_QMV_MAX_THREADS 16
+
+typedef struct {
+    nt_qrows_fn fn; float *out; const uint8_t *Wq; const float *x;
+    int r0, r1, k;
+} nt_qjob;
+
+static void *nt_qworker(void *p) {
+    nt_qjob *j = (nt_qjob *)p;
+    j->fn(j->out, j->Wq, j->x, j->r0, j->r1, j->k);
+    return NULL;
+}
+
+// Packed quantized matvec, parallelized across rows. dtype = GGUF type code.
+int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
+               const float *x, int m, int k) {
+    nt_qrows_fn fn = nt_qrows_for(dtype, k);
+    if (!fn) return -1;
+
+    int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (nt < 1) nt = 1;
+    if (nt > NT_QMV_MAX_THREADS) nt = NT_QMV_MAX_THREADS;
+    if (nt > m) nt = m;
+    // Gated high: per-call spawn + 2P+4E asymmetry make fan-out counterproductive for
+    // small single-token decode matvecs; only large matvecs (big models / batched) thread.
+    if (nt <= 1 || (long)m * k < (4L << 20)) { fn(out, Wq, x, 0, m, k); return 0; }
+
+    pthread_t th[NT_QMV_MAX_THREADS];
+    nt_qjob   jobs[NT_QMV_MAX_THREADS];
+    int per = (m + nt - 1) / nt, launched = 0;
+    for (int t = 0; t < nt; t++) {
+        int r0 = t * per, r1 = (r0 + per > m) ? m : r0 + per;
+        if (r0 >= m) break;
+        jobs[t] = (nt_qjob){ fn, out, Wq, x, r0, r1, k };
+        if (pthread_create(&th[t], NULL, nt_qworker, &jobs[t]) != 0) {
+            fn(out, Wq, x, r0, m, k);
+            break;
+        }
+        launched++;
+    }
+    for (int t = 0; t < launched; t++) pthread_join(th[t], NULL);
+    return 0;
 }

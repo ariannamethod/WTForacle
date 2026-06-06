@@ -179,14 +179,14 @@ WTForacle/
 
 why this layout: notorch lives outside the Go package so it can be re-synced from upstream without touching Go code. one bridge file (`wtf/cbridge.c`) `#include`s the C sources so cgo picks them up automatically.
 
-**before / after on Mac M1 8GB**, SmolLM2 360M Q4_0, decode-only (median of 5 runs, baseline = previous Go-Q4_0 + BLAS-on-F32-only path):
+**before / after on Mac 8GB**, SmolLM2 360M Q4_0, decode-only (median of 5 runs, baseline = previous Go-Q4_0 + BLAS-on-F32-only path):
 
 | build | tok/s | speedup |
 |---|---|---|
 | baseline (`-tags blas`, pure-Go Q4_0 matmul) | ~12.0 | 1.0× |
 | notorch path (full F32 dequant + sgemv) | ~20.6 | **1.7×** |
 
-the cost: weights dequantized to F32 at load time, so the live RSS is ~1.4 GB instead of ~250 MB. fine on an 8 GB laptop, fine on Linux. on a 4 GB phone you'd want the old Q4_0-direct path back — which is why notorch dequant is a single function call you can swap out.
+that F32 cost is now optional. the **packed path** (branch `feat/packed-qmatvec`) keeps the GGUF weights packed and matvecs them straight through notorch's `nt_qmatvec` — no dense-F32 blow-up. measured on neo (A18 Pro): **RSS 1600 MB → 588 MB (×2.72)**, greedy output byte-identical to the F32 path. the speed lever for the packed path is notorch's int8 dynamic-activation-quant matvec (`nt_qmatvec_i8`, NEON SDOT — **22.9× over scalar f32-dequant** at the kernel level); wiring it through WTForacle's decode end-to-end is in progress. on a 4 GB phone the packed path *is* the answer — Termux's notorch already runs `nt_qmatvec` on aarch64.
 
 **prompt format:**
 

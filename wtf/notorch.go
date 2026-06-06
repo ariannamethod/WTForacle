@@ -11,7 +11,7 @@ package wtf
 // notorch.c is built with USE_BLAS so nt_blas_matvec routes to cblas_sgemv.
 
 /*
-#cgo CFLAGS: -O3 -DUSE_BLAS -I${SRCDIR}/../ariannamethod
+#cgo CFLAGS: -O3 -DUSE_BLAS -pthread -I${SRCDIR}/../ariannamethod
 #cgo darwin CFLAGS: -DACCELERATE -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations
 #cgo darwin LDFLAGS: -framework Accelerate
 #cgo linux LDFLAGS: -lopenblas
@@ -64,6 +64,20 @@ func sgemv(out, w, x []float32, m, n int) {
 		(*C.float)(unsafe.Pointer(&x[0])),
 		C.int(m), C.int(n),
 	)
+}
+
+// qmatvec computes out[m] = Wq[m,k] @ x[k] from PACKED quantized weights (raw
+// GGUF bytes, dtype = GGML tag), dequantized inline by notorch's nt_qmatvec —
+// no dense-f32 blow-up. Returns false if the dtype has no packed kernel.
+func qmatvec(out []float32, wq []byte, dtype int, x []float32, m, k int) bool {
+	rc := C.wtf_qmatvec(
+		(*C.float)(unsafe.Pointer(&out[0])),
+		(*C.uint8_t)(unsafe.Pointer(&wq[0])),
+		C.int(dtype),
+		(*C.float)(unsafe.Pointer(&x[0])),
+		C.int(m), C.int(k),
+	)
+	return rc == 0
 }
 
 // sgemvStrided is sgemv against a sub-matrix view (row stride lda > n).

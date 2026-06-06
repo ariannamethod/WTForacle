@@ -8,9 +8,11 @@ package wtf
 //   RoPE theta=100000, RMSNorm eps=1e-5, no attention bias
 //   Vocab 49152 (byte-level BPE)
 //
-// Weights are dequantized to float32 once at load time via the vendored
-// notorch kernels (../ariannamethod/wtf_kernels.c). All matvec calls in
-// the hot path go straight to cblas_sgemv via Apple Accelerate / OpenBLAS.
+// Layer weight matrices are kept in their packed GGUF encoding and matvec'd
+// straight from packed bytes via notorch's nt_qmatvec (no dense-f32 blow-up) —
+// see QW / loadQW below. Token embeddings and norms stay f32 (the embedding
+// lookup needs f32 rows). On SmolLM2-360M Q4_0 this cut peak RSS 1600 MB -> 588 MB
+// (neo, A18 Pro) with byte-identical greedy output vs the old f32 path.
 
 import (
 	"fmt"
@@ -55,19 +57,67 @@ type LlamaLayerWeights struct {
 	AttnNorm []float32 // [dim]
 	FFNNorm  []float32 // [dim]
 
-	WQ []float32 // [n_heads*head_dim, dim]
-	WK []float32 // [n_kv_heads*head_dim, dim]
-	WV []float32 // [n_kv_heads*head_dim, dim]
-	WO []float32 // [dim, n_heads*head_dim]
+	WQ QW // [n_heads*head_dim, dim]
+	WK QW // [n_kv_heads*head_dim, dim]
+	WV QW // [n_kv_heads*head_dim, dim]
+	WO QW // [dim, n_heads*head_dim]
 
 	BQ []float32 // optional — nil for SmolLM2
 	BK []float32
 	BV []float32
 	BO []float32
 
-	WGate []float32 // [interm, dim]
-	WUp   []float32 // [interm, dim]
-	WDown []float32 // [dim, interm]
+	WGate QW // [interm, dim]
+	WUp   QW // [interm, dim]
+	WDown QW // [dim, interm]
+}
+
+// QW is a weight matrix [M,K] kept in its packed GGUF encoding (Packed != nil) so
+// it is never blown up to dense f32 in RAM. When the dtype has no packed kernel,
+// F32 holds the dequantized fallback instead.
+type QW struct {
+	Packed []byte    // packed GGUF bytes (owned copy), nil if dequantized
+	F32    []float32 // dequantized fallback, nil if packed
+	Dtype  int
+	M, K   int
+}
+
+// matvec computes out[M] = W[M,K] @ x[K] — packed via notorch nt_qmatvec when the
+// weight is packed, else cblas sgemv on the f32 fallback.
+func (w *QW) matvec(out, x []float32) {
+	if w.Packed != nil {
+		qmatvec(out, w.Packed, w.Dtype, x, w.M, w.K)
+		return
+	}
+	sgemv(out, w.F32, x, w.M, w.K)
+}
+
+func qmatvecSupported(dt int) bool {
+	switch dt {
+	case dtypeF32, dtypeF16, dtypeQ4_0, dtypeQ5_0, dtypeQ8_0, dtypeQ4_K, dtypeQ6_K:
+		return true
+	}
+	return false
+}
+
+// loadQW loads the [m,k] matrix named `name`, kept PACKED when nt_qmatvec supports
+// its dtype (bytes copied so the GGUF blob can be freed), else dequantized to f32.
+func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
+	data, info, err := gguf.GetTensor(name)
+	if err != nil {
+		return QW{}, err
+	}
+	dt := int(info.Type)
+	if qmatvecSupported(dt) {
+		packed := make([]byte, len(data))
+		copy(packed, data)
+		return QW{Packed: packed, Dtype: dt, M: m, K: k}, nil
+	}
+	f32, err := dequantToF32(data, info.Type, m*k)
+	if err != nil {
+		return QW{}, err
+	}
+	return QW{F32: f32, Dtype: dt, M: m, K: k}, nil
 }
 
 // LlamaState holds runtime buffers + KV cache.
@@ -92,9 +142,9 @@ type LlamaState struct {
 	Pos int
 }
 
-// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Heavy: this
-// dequantizes every weight tensor to float32 (cgo → notorch kernel) before
-// returning.
+// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Layer weight
+// matrices are kept packed (copied out of the GGUF blob); embeddings and norms
+// are dequantized to f32.
 func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	m := gguf.Meta
 
@@ -133,8 +183,8 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 		return nil, fmt.Errorf("load weights: %w", err)
 	}
 
-	// Drop the raw GGUF byte buffer — every tensor is now F32 and the
-	// quantized blob just sits there eating ~220 MB of RSS.
+	// Drop the raw GGUF byte buffer — layer weights are now copied out packed
+	// and embeddings/norms are f32, so the original quantized blob can go.
 	gguf.TensorData = nil
 	runtime.GC()
 
@@ -198,16 +248,16 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 			return nil, fmt.Errorf("layer %d ffn_norm: %w", i, err)
 		}
 
-		if l.WQ, err = dequantTensor(gguf, prefix+"attn_q.weight", qDim*dim); err != nil {
+		if l.WQ, err = loadQW(gguf, prefix+"attn_q.weight", qDim, dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_q: %w", i, err)
 		}
-		if l.WK, err = dequantTensor(gguf, prefix+"attn_k.weight", kvDim*dim); err != nil {
+		if l.WK, err = loadQW(gguf, prefix+"attn_k.weight", kvDim, dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_k: %w", i, err)
 		}
-		if l.WV, err = dequantTensor(gguf, prefix+"attn_v.weight", kvDim*dim); err != nil {
+		if l.WV, err = loadQW(gguf, prefix+"attn_v.weight", kvDim, dim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_v: %w", i, err)
 		}
-		if l.WO, err = dequantTensor(gguf, prefix+"attn_output.weight", dim*qDim); err != nil {
+		if l.WO, err = loadQW(gguf, prefix+"attn_output.weight", dim, qDim); err != nil {
 			return nil, fmt.Errorf("layer %d attn_output: %w", i, err)
 		}
 
@@ -216,13 +266,13 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 		l.BV, _ = getF32TensorOptional(gguf, prefix+"attn_v.bias", kvDim)
 		l.BO, _ = getF32TensorOptional(gguf, prefix+"attn_output.bias", dim)
 
-		if l.WGate, err = dequantTensor(gguf, prefix+"ffn_gate.weight", interm*dim); err != nil {
+		if l.WGate, err = loadQW(gguf, prefix+"ffn_gate.weight", interm, dim); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_gate: %w", i, err)
 		}
-		if l.WUp, err = dequantTensor(gguf, prefix+"ffn_up.weight", interm*dim); err != nil {
+		if l.WUp, err = loadQW(gguf, prefix+"ffn_up.weight", interm, dim); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_up: %w", i, err)
 		}
-		if l.WDown, err = dequantTensor(gguf, prefix+"ffn_down.weight", dim*interm); err != nil {
+		if l.WDown, err = loadQW(gguf, prefix+"ffn_down.weight", dim, interm); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_down: %w", i, err)
 		}
 	}
@@ -345,10 +395,10 @@ func (m *LlamaModel) Forward(token int, pos int) {
 		// Attention pre-norm
 		RMSNormInto(s.XB, s.X, l.AttnNorm, cfg.RMSNormEps)
 
-		// Q, K, V projections via BLAS sgemv
-		sgemv(s.Q, l.WQ, s.XB, cfg.NumHeads*hd, dim)
-		sgemv(s.K, l.WK, s.XB, cfg.NumKVHeads*hd, dim)
-		sgemv(s.V, l.WV, s.XB, cfg.NumKVHeads*hd, dim)
+		// Q, K, V projections — packed matvec (notorch nt_qmatvec, weights stay packed)
+		l.WQ.matvec(s.Q, s.XB)
+		l.WK.matvec(s.K, s.XB)
+		l.WV.matvec(s.V, s.XB)
 
 		addBias(s.Q, l.BQ)
 		addBias(s.K, l.BK)
@@ -397,7 +447,7 @@ func (m *LlamaModel) Forward(token int, pos int) {
 		}
 
 		// Output projection + residual
-		sgemv(s.XB, l.WO, s.XB2, dim, dim)
+		l.WO.matvec(s.XB, s.XB2)
 		addBias(s.XB, l.BO)
 		for i := 0; i < dim; i++ {
 			s.X[i] += s.XB[i]
@@ -407,12 +457,12 @@ func (m *LlamaModel) Forward(token int, pos int) {
 		RMSNormInto(s.XB, s.X, l.FFNNorm, cfg.RMSNormEps)
 
 		// SwiGLU: silu(gate(x)) * up(x), then down(...)
-		sgemv(s.HB, l.WGate, s.XB, cfg.IntermSize, dim)
-		sgemv(s.HB2, l.WUp, s.XB, cfg.IntermSize, dim)
+		l.WGate.matvec(s.HB, s.XB)
+		l.WUp.matvec(s.HB2, s.XB)
 		for i := 0; i < cfg.IntermSize; i++ {
 			s.HB[i] = SiLU(s.HB[i]) * s.HB2[i]
 		}
-		sgemv(s.XB, l.WDown, s.HB, dim, cfg.IntermSize)
+		l.WDown.matvec(s.XB, s.HB)
 		for i := 0; i < dim; i++ {
 			s.X[i] += s.XB[i]
 		}
