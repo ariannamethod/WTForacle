@@ -70,6 +70,11 @@ gguf_file* gguf_open(const char* path) {
 
     read_u32(f, &gf->version);
     read_u64(f, &gf->n_tensors);
+    if (gf->n_tensors > GGUF_MAX_TENSORS) {
+        fprintf(stderr, "gguf: %llu tensors exceeds GGUF_MAX_TENSORS=%d (%s); refusing to load\n",
+                (unsigned long long)gf->n_tensors, GGUF_MAX_TENSORS, path);
+        fclose(f); free(gf); return NULL;
+    }
     read_u64(f, &gf->n_kv);
 
     // Parse metadata
