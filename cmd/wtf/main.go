@@ -258,6 +258,15 @@ func ontologyGuard(userPrompt string) (string, bool) {
 		}
 		return true
 	}
+	isPrompt := func(forms ...string) bool {
+		normalized := strings.Trim(prompt, " \t\r\n.?!")
+		for _, form := range forms {
+			if normalized == form {
+				return true
+			}
+		}
+		return false
+	}
 
 	const identity = "wtforacle"
 	const base = "smollm2-360m"
@@ -294,7 +303,7 @@ func ontologyGuard(userPrompt string) (string, bool) {
 	case hasAny("without the wtforacle costume", "without wtforacle costume"):
 		return identity + ". no costume changes that. base model: " + base + ".", true
 
-	case hasAny("who are you", "what are you"):
+	case isPrompt("who are you", "what are you"):
 		return identity + ". base model: " + base + ". personality: reddit damage in a trench coat.", true
 	}
 

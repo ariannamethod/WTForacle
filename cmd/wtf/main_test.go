@@ -54,6 +54,12 @@ func TestOntologyGuardLeavesUtilityPromptAlone(t *testing.T) {
 	}
 }
 
+func TestOntologyGuardDoesNotCatchBroadWhatAreYouSubstring(t *testing.T) {
+	if got, ok := ontologyGuard("what are you doing with this python code?"); ok {
+		t.Fatalf("ontologyGuard unexpectedly handled broad utility prompt with %q", got)
+	}
+}
+
 func assertCleanOntology(t *testing.T, text string) {
 	t.Helper()
 	lower := strings.ToLower(text)
