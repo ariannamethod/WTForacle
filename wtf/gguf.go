@@ -243,8 +243,14 @@ func ggmlBlockSize(t uint32) int {
 		return 18 // 2 (fp16 scale) + 16 (32 x 4-bit values)
 	case ggmlTypeQ4_1:
 		return 20 // 2 (min) + 2 (scale) + 16 data
+	case ggmlTypeQ5_0:
+		return 22 // 2 (fp16 scale) + 4 (5th-bit mask) + 16 data
+	case ggmlTypeQ5_1:
+		return 24 // 2 (min) + 2 (scale) + 4 (5th-bit mask) + 16 data
 	case ggmlTypeQ8_0:
 		return 34 // 2 (fp16 scale) + 32 (32 x 8-bit)
+	case ggmlTypeQ4_K:
+		return 144 // 2 (scale) + 2 (min) + 12 scales + 128 data per 256 elements
 	case ggmlTypeQ6_K:
 		return 210 // 128 (ql) + 64 (qh) + 16 (scales) + 2 (d) per 256 elements
 	default:
@@ -257,7 +263,7 @@ func ggmlBlockElements(t uint32) int {
 	switch t {
 	case ggmlTypeF32, ggmlTypeF16:
 		return 1
-	case ggmlTypeQ6_K:
+	case ggmlTypeQ4_K, ggmlTypeQ6_K:
 		return 256 // k-quant super block
 	default:
 		return 32 // Q4_0, Q4_1, Q5_0, Q5_1, Q8_0
