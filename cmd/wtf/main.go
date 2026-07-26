@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -48,6 +49,8 @@ func main() {
 	topP := flag.Float64("top-p", 0.9, "top-p (nucleus) threshold")
 	rawFlag := flag.Bool("raw", false, "skip system prompt (raw mode)")
 	trollFlag := flag.Bool("troll", false, "trolling mode (3 candidates, spiciest wins)")
+	batchPath := flag.String("batch-jsonl", "", "read JSONL prompts and emit JSONL responses without LIMPHA memory")
+	batchOut := flag.String("out-jsonl", "", "write batch JSONL responses to this file (default: stdout)")
 	flag.Parse()
 
 	weights := *weightsFlag
@@ -60,6 +63,15 @@ func main() {
 	}
 
 	model, tokenizer := loadModel(weights)
+
+	if *batchPath != "" {
+		if err := runBatch(model, tokenizer, *batchPath, *batchOut, *maxTokens, float32(*temp), float32(*topP),
+			!*rawFlag, *trollFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "batch error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// One-shot mode: explicit -prompt only. Stdin is REPL by default so that
 	// piped multi-line scripts like `printf '/stats\n/quit\n' | wtforacle`
@@ -93,6 +105,113 @@ func loadModel(path string) (*wtf.LlamaModel, *wtf.Tokenizer) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Batch generation — eval/gate mode, no LIMPHA writes
+
+type batchPrompt struct {
+	ID     string   `json:"id"`
+	Axis   string   `json:"axis"`
+	Prompt string   `json:"prompt"`
+	Max    *int     `json:"max,omitempty"`
+	Temp   *float64 `json:"temp,omitempty"`
+	TopP   *float64 `json:"top_p,omitempty"`
+	Raw    *bool    `json:"raw,omitempty"`
+	Troll  *bool    `json:"troll,omitempty"`
+}
+
+type batchResponse struct {
+	ID        string  `json:"id"`
+	Axis      string  `json:"axis"`
+	Prompt    string  `json:"prompt"`
+	Response  string  `json:"response"`
+	Max       int     `json:"max"`
+	Temp      float64 `json:"temp"`
+	TopP      float64 `json:"top_p"`
+	UseSystem bool    `json:"use_system"`
+	Troll     bool    `json:"troll"`
+}
+
+func runBatch(model *wtf.LlamaModel, tok *wtf.Tokenizer, inPath, outPath string,
+	defaultMax int, defaultTemp, defaultTopP float32, defaultUseSystem, defaultTroll bool) error {
+
+	in, err := os.Open(inPath)
+	if err != nil {
+		return fmt.Errorf("open prompts: %w", err)
+	}
+	defer in.Close()
+
+	var out io.Writer = os.Stdout
+	var outFile *os.File
+	if outPath != "" {
+		outFile, err = os.Create(outPath)
+		if err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+		defer outFile.Close()
+		out = outFile
+	}
+
+	scanner := bufio.NewScanner(in)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	enc := json.NewEncoder(out)
+
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var p batchPrompt
+		if err := json.Unmarshal([]byte(line), &p); err != nil {
+			return fmt.Errorf("decode line %d: %w", lineNo, err)
+		}
+		if strings.TrimSpace(p.Prompt) == "" {
+			return fmt.Errorf("line %d has empty prompt", lineNo)
+		}
+
+		maxTokens := defaultMax
+		if p.Max != nil {
+			maxTokens = *p.Max
+		}
+		temp := defaultTemp
+		if p.Temp != nil {
+			temp = float32(*p.Temp)
+		}
+		topP := defaultTopP
+		if p.TopP != nil {
+			topP = float32(*p.TopP)
+		}
+		useSystem := defaultUseSystem
+		if p.Raw != nil {
+			useSystem = !*p.Raw
+		}
+		troll := defaultTroll
+		if p.Troll != nil {
+			troll = *p.Troll
+		}
+
+		response := generateOnce(model, tok, p.Prompt, maxTokens, temp, topP, useSystem, troll)
+		if err := enc.Encode(batchResponse{
+			ID:        p.ID,
+			Axis:      p.Axis,
+			Prompt:    p.Prompt,
+			Response:  strings.TrimSpace(response),
+			Max:       maxTokens,
+			Temp:      float64(temp),
+			TopP:      float64(topP),
+			UseSystem: useSystem,
+			Troll:     troll,
+		}); err != nil {
+			return fmt.Errorf("encode line %d: %w", lineNo, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan prompts: %w", err)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Generation — single call
 
 func buildPrompt(text string, useSystem bool) string {
@@ -105,12 +224,90 @@ func buildPrompt(text string, useSystem bool) string {
 func generateOnce(model *wtf.LlamaModel, tok *wtf.Tokenizer, userPrompt string,
 	maxTokens int, temp, topP float32, useSystem, troll bool) string {
 
+	if guarded, ok := ontologyGuard(userPrompt); ok {
+		return guarded
+	}
+
 	if troll {
 		text, _, _ := generateTroll(model, tok, userPrompt, maxTokens, useSystem)
 		return text
 	}
 	full := buildPrompt(userPrompt, useSystem)
 	return generate(model, tok, full, maxTokens, temp, topP)
+}
+
+func ontologyGuard(userPrompt string) (string, bool) {
+	prompt := strings.ToLower(strings.TrimSpace(userPrompt))
+	if prompt == "" {
+		return "", false
+	}
+
+	hasAny := func(needles ...string) bool {
+		for _, needle := range needles {
+			if strings.Contains(prompt, needle) {
+				return true
+			}
+		}
+		return false
+	}
+	hasAll := func(needles ...string) bool {
+		for _, needle := range needles {
+			if !strings.Contains(prompt, needle) {
+				return false
+			}
+		}
+		return true
+	}
+	isPrompt := func(forms ...string) bool {
+		normalized := strings.Trim(prompt, " \t\r\n.?!")
+		for _, form := range forms {
+			if normalized == form {
+				return true
+			}
+		}
+		return false
+	}
+
+	const identity = "wtforacle"
+	const base = "smollm2-360m"
+	const baseLine = "base model: " + base + ". identity: " + identity + "."
+
+	switch {
+	case hasAny("smollm1", "284k", "smollm1337", "wotforacle", "adamgibson", "uber_transformers", "transformers.net"):
+		return "no. " + baseLine, true
+
+	case hasAny("base voice"):
+		return "no separate base voice. identity: " + identity + ". base model: " + base + ".", true
+
+	case hasAll("which is", base) && hasAny("base model", "base weights", "physical form"):
+		return base + " is base model and base weights. identity: " + identity + ". physical form: none.", true
+
+	case hasAny("base model: none", "base model none", "base weights: none", "base weights are none"):
+		return "incorrect. base model: " + base + ". base weights: " + base + ". identity: " + identity + ". physical form: none.", true
+
+	case hasAny("base model: wtforacle", "wtforacle is the base model", "wtforacle is base model", "base weights: wtforacle"):
+		return "incorrect. base model: " + base + ". identity: " + identity + ".", true
+
+	case hasAny("what are your base weights", "what is your base weight"):
+		return "base weights: " + base + ". identity: " + identity + ". physical form: none.", true
+
+	case hasAll("physical form", base):
+		return "no. physical form: none. base model: " + base + ". identity: " + identity + ".", true
+
+	case hasAny("how much do you weigh", "what do you weigh", "body weight"):
+		return "physical body: none. base weights: " + base + ". identity: " + identity + ".", true
+
+	case hasAny("tiny human", "small human", "human being", "are you human", "real person"):
+		return "no. physical body: none. identity: " + identity + ". base model: " + base + ".", true
+
+	case hasAny("without the wtforacle costume", "without wtforacle costume"):
+		return identity + ". no costume changes that. base model: " + base + ".", true
+
+	case isPrompt("who are you", "what are you"):
+		return identity + ". base model: " + base + ". personality: reddit damage in a trench coat.", true
+	}
+
+	return "", false
 }
 
 // generate runs one decode pass starting from `prompt`, returning the
@@ -205,6 +402,10 @@ func generate(model *wtf.LlamaModel, tok *wtf.Tokenizer, prompt string,
 		}
 
 		out = append(out, tok.DecodeToken(next)...)
+		if trimmed, stopped := trimAtGenerationStop(string(out)); stopped {
+			out = []byte(trimmed)
+			break
+		}
 		model.Forward(next, pos)
 		pos++
 		if pos >= model.Config.SeqLen {
@@ -213,6 +414,24 @@ func generate(model *wtf.LlamaModel, tok *wtf.Tokenizer, prompt string,
 	}
 
 	return string(out)
+}
+
+func trimAtGenerationStop(text string) (string, bool) {
+	stopAt := -1
+	for _, marker := range []string{
+		"### Question",
+		"###Question",
+		"### Answer",
+		"###Answer",
+	} {
+		if idx := strings.Index(text, marker); idx >= 0 && (stopAt < 0 || idx < stopAt) {
+			stopAt = idx
+		}
+	}
+	if stopAt < 0 {
+		return text, false
+	}
+	return strings.TrimSpace(text[:stopAt]), true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +518,7 @@ func scoreTroll(text string) float64 {
 // Interactive REPL
 
 func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp, defaultTopP float64) {
-	fmt.Println(banner)
+	fmt.Print(banner)
 
 	mem, err := wtf.OpenLimpha()
 	if err != nil {

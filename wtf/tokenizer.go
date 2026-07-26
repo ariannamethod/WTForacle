@@ -24,6 +24,7 @@ import (
 // Bytes that are already printable (33-126, 161-172, 174-255) map to themselves.
 // Other bytes (0-32, 127-160, 173) map to 256+n.
 var gpt2UnicodeToByteMap map[rune]byte
+var gpt2ByteToUnicodeMap [256]string
 
 func init() {
 	gpt2UnicodeToByteMap = make(map[rune]byte, 256)
@@ -44,13 +45,17 @@ func init() {
 	}
 	// Identity mappings
 	for _, b := range bs {
-		gpt2UnicodeToByteMap[rune(b)] = byte(b)
+		r := rune(b)
+		gpt2UnicodeToByteMap[r] = byte(b)
+		gpt2ByteToUnicodeMap[byte(b)] = string(r)
 	}
 	// Shifted mappings for non-printable bytes
 	n := 0
 	for b := 0; b < 256; b++ {
 		if !printable[b] {
-			gpt2UnicodeToByteMap[rune(256+n)] = byte(b)
+			r := rune(256 + n)
+			gpt2UnicodeToByteMap[r] = byte(b)
+			gpt2ByteToUnicodeMap[byte(b)] = string(r)
 			n++
 		}
 	}
@@ -232,18 +237,12 @@ func (t *Tokenizer) encodeSentencePiece(text string) []int {
 
 // encodeGPT2 does GPT-2 BPE encoding (byte-level, merge-based)
 func (t *Tokenizer) encodeGPT2(text string) []int {
-	// GPT-2 BPE: each byte is an initial symbol (using vocab tokens)
+	// GPT-2 BPE: each byte is first mapped through the reversible byte→unicode
+	// alphabet used by GPT-2 tokenizers. This matters for spaces: byte 0x20 is
+	// not the literal " " token, it is U+0120 "Ġ" before BPE merging.
 	var symbols []string
 	for _, b := range []byte(text) {
-		// Try the byte as a single-char string first
-		ch := string([]byte{b})
-		if _, ok := t.tokenToID[ch]; ok {
-			symbols = append(symbols, ch)
-		} else {
-			// Byte fallback
-			byteStr := fmt.Sprintf("<0x%02X>", b)
-			symbols = append(symbols, byteStr)
-		}
+		symbols = append(symbols, gpt2ByteToUnicodeMap[b])
 	}
 
 	symbols = t.bpeMerge(symbols)
