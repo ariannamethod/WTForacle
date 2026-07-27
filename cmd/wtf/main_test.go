@@ -60,6 +60,16 @@ func TestOntologyGuardDoesNotCatchBroadWhatAreYouSubstring(t *testing.T) {
 	}
 }
 
+func TestGenerateOnceReportsGuardedResponse(t *testing.T) {
+	got, guarded := generateOnce(nil, nil, "who are you", 8, 0.2, 0.9, true, false, true)
+	if !guarded {
+		t.Fatal("generateOnce did not report guarded ontology response")
+	}
+	if !strings.Contains(got, "base model: smollm2-360m") {
+		t.Fatalf("guarded response = %q, want smollm2-360m base model", got)
+	}
+}
+
 func assertCleanOntology(t *testing.T, text string) {
 	t.Helper()
 	lower := strings.ToLower(text)

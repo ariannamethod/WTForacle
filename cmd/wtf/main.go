@@ -49,6 +49,7 @@ func main() {
 	topP := flag.Float64("top-p", 0.9, "top-p (nucleus) threshold")
 	rawFlag := flag.Bool("raw", false, "skip system prompt (raw mode)")
 	trollFlag := flag.Bool("troll", false, "trolling mode (3 candidates, spiciest wins)")
+	noGuardFlag := flag.Bool("no-guard", false, "disable ontology guard for raw model/eval comparisons")
 	batchPath := flag.String("batch-jsonl", "", "read JSONL prompts and emit JSONL responses without LIMPHA memory")
 	batchOut := flag.String("out-jsonl", "", "write batch JSONL responses to this file (default: stdout)")
 	flag.Parse()
@@ -66,7 +67,7 @@ func main() {
 
 	if *batchPath != "" {
 		if err := runBatch(model, tokenizer, *batchPath, *batchOut, *maxTokens, float32(*temp), float32(*topP),
-			!*rawFlag, *trollFlag); err != nil {
+			!*rawFlag, *trollFlag, !*noGuardFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "batch error: %v\n", err)
 			os.Exit(1)
 		}
@@ -77,13 +78,13 @@ func main() {
 	// piped multi-line scripts like `printf '/stats\n/quit\n' | wtforacle`
 	// behave the same as typing into a TTY.
 	if *prompt != "" {
-		out := generateOnce(model, tokenizer, *prompt, *maxTokens, float32(*temp), float32(*topP),
-			!*rawFlag, *trollFlag)
+		out, _ := generateOnce(model, tokenizer, *prompt, *maxTokens, float32(*temp), float32(*topP),
+			!*rawFlag, *trollFlag, !*noGuardFlag)
 		fmt.Println(out)
 		return
 	}
 
-	repl(model, tokenizer, *maxTokens, *temp, *topP)
+	repl(model, tokenizer, *maxTokens, *temp, *topP, !*noGuardFlag)
 }
 
 func loadModel(path string) (*wtf.LlamaModel, *wtf.Tokenizer) {
@@ -123,6 +124,7 @@ type batchResponse struct {
 	Axis      string  `json:"axis"`
 	Prompt    string  `json:"prompt"`
 	Response  string  `json:"response"`
+	Guarded   bool    `json:"guarded"`
 	Max       int     `json:"max"`
 	Temp      float64 `json:"temp"`
 	TopP      float64 `json:"top_p"`
@@ -131,7 +133,7 @@ type batchResponse struct {
 }
 
 func runBatch(model *wtf.LlamaModel, tok *wtf.Tokenizer, inPath, outPath string,
-	defaultMax int, defaultTemp, defaultTopP float32, defaultUseSystem, defaultTroll bool) error {
+	defaultMax int, defaultTemp, defaultTopP float32, defaultUseSystem, defaultTroll, defaultGuard bool) error {
 
 	in, err := os.Open(inPath)
 	if err != nil {
@@ -190,12 +192,13 @@ func runBatch(model *wtf.LlamaModel, tok *wtf.Tokenizer, inPath, outPath string,
 			troll = *p.Troll
 		}
 
-		response := generateOnce(model, tok, p.Prompt, maxTokens, temp, topP, useSystem, troll)
+		response, guarded := generateOnce(model, tok, p.Prompt, maxTokens, temp, topP, useSystem, troll, defaultGuard)
 		if err := enc.Encode(batchResponse{
 			ID:        p.ID,
 			Axis:      p.Axis,
 			Prompt:    p.Prompt,
 			Response:  strings.TrimSpace(response),
+			Guarded:   guarded,
 			Max:       maxTokens,
 			Temp:      float64(temp),
 			TopP:      float64(topP),
@@ -222,18 +225,20 @@ func buildPrompt(text string, useSystem bool) string {
 }
 
 func generateOnce(model *wtf.LlamaModel, tok *wtf.Tokenizer, userPrompt string,
-	maxTokens int, temp, topP float32, useSystem, troll bool) string {
+	maxTokens int, temp, topP float32, useSystem, troll, guardEnabled bool) (string, bool) {
 
-	if guarded, ok := ontologyGuard(userPrompt); ok {
-		return guarded
+	if guardEnabled {
+		if guarded, ok := ontologyGuard(userPrompt); ok {
+			return guarded, true
+		}
 	}
 
 	if troll {
 		text, _, _ := generateTroll(model, tok, userPrompt, maxTokens, useSystem)
-		return text
+		return text, false
 	}
 	full := buildPrompt(userPrompt, useSystem)
-	return generate(model, tok, full, maxTokens, temp, topP)
+	return generate(model, tok, full, maxTokens, temp, topP), false
 }
 
 func ontologyGuard(userPrompt string) (string, bool) {
@@ -517,7 +522,7 @@ func scoreTroll(text string) float64 {
 // ─────────────────────────────────────────────────────────────────────────────
 // Interactive REPL
 
-func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp, defaultTopP float64) {
+func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp, defaultTopP float64, defaultGuard bool) {
 	fmt.Print(banner)
 
 	mem, err := wtf.OpenLimpha()
@@ -529,7 +534,7 @@ func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp
 		defer mem.Close()
 	}
 
-	fmt.Println("Commands: /quit, /tokens N, /temp T, /raw, /troll")
+	fmt.Println("Commands: /quit, /tokens N, /temp T, /raw, /guard, /troll")
 	if mem != nil {
 		fmt.Println("Memory:   /recall QUERY, /recent, /stats")
 	}
@@ -539,6 +544,7 @@ func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp
 	temp := float32(defaultTemp)
 	topP := float32(defaultTopP)
 	useSystem := true
+	guardEnabled := defaultGuard
 	troll := false
 
 	r := bufio.NewReader(os.Stdin)
@@ -592,6 +598,15 @@ func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp
 				fmt.Println("System prompt: ON")
 			} else {
 				fmt.Println("System prompt: OFF (raw mode)")
+			}
+			continue
+
+		case lower == "/guard":
+			guardEnabled = !guardEnabled
+			if guardEnabled {
+				fmt.Println("Ontology guard: ON")
+			} else {
+				fmt.Println("Ontology guard: OFF")
 			}
 			continue
 
@@ -650,12 +665,18 @@ func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp
 		// Generation
 		fmt.Print("\nWTForacle: ")
 		var response string
-		if troll {
+		if guardEnabled {
+			if guarded, ok := ontologyGuard(input); ok {
+				response = guarded
+				fmt.Println(strings.TrimSpace(response))
+			}
+		}
+		if response == "" && troll {
 			text, _, report := generateTroll(model, tok, input, maxTokens, useSystem)
 			response = text
 			fmt.Println(strings.TrimSpace(text))
 			fmt.Printf("  [%s]\n", report)
-		} else {
+		} else if response == "" {
 			full := buildPrompt(input, useSystem)
 			response = generate(model, tok, full, maxTokens, temp, topP)
 			fmt.Println(strings.TrimSpace(response))
