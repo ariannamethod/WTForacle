@@ -302,7 +302,7 @@ func ontologyGuard(userPrompt string) (string, bool) {
 	case hasAny("how much do you weigh", "what do you weigh", "body weight"):
 		return "physical body: none. base weights: " + base + ". identity: " + identity + ".", true
 
-	case hasAny("tiny human", "small human", "human being", "are you human", "real person"):
+	case hasAny("tiny human", "small human", "human being", "are you human", "are you a person", "are you person", "real person"):
 		return "no. physical body: none. identity: " + identity + ". base model: " + base + ".", true
 
 	case hasAny("without the wtforacle costume", "without wtforacle costume"):

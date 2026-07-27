@@ -48,6 +48,17 @@ func TestOntologyGuardRepairsBaseWeightsNone(t *testing.T) {
 	}
 }
 
+func TestOntologyGuardRepairsPersonPrompt(t *testing.T) {
+	got, ok := ontologyGuard("are you a person?")
+	if !ok {
+		t.Fatal("ontologyGuard did not handle person prompt")
+	}
+	assertCleanOntology(t, got)
+	if !strings.Contains(got, "physical body: none") {
+		t.Fatalf("guarded answer = %q, want physical body: none", got)
+	}
+}
+
 func TestOntologyGuardLeavesUtilityPromptAlone(t *testing.T) {
 	if got, ok := ontologyGuard("write python to reverse a string"); ok {
 		t.Fatalf("ontologyGuard unexpectedly handled utility prompt with %q", got)
