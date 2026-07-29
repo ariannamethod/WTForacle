@@ -21,6 +21,11 @@ import (
 	"strings"
 )
 
+const (
+	DefaultMaxSeqLen = 2048
+	minMaxSeqLen     = 2
+)
+
 // LlamaModel is a loaded LLaMA-arch model ready for inference.
 type LlamaModel struct {
 	Config  LlamaConfig
@@ -45,6 +50,10 @@ type LlamaConfig struct {
 	// QKPermuted — convert_hf_to_gguf.py interleaves Q/K halves for
 	// LLaMA-arch models. We un-permute after matmul so half-split RoPE works.
 	QKPermuted bool
+}
+
+type LlamaLoadOptions struct {
+	MaxSeqLen int
 }
 
 // LlamaWeights holds transformer weights. The large vocab tables are kept
@@ -265,10 +274,14 @@ type LlamaState struct {
 	Pos int
 }
 
-// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Layer matrices
-// and vocab tables are kept packed when their dtype has a runtime kernel; norms
-// and tiny vectors are dequantized to f32.
 func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
+	return LoadLlamaModelWithOptions(gguf, LlamaLoadOptions{})
+}
+
+// LoadLlamaModelWithOptions builds a LlamaModel from a parsed GGUF file. Layer
+// matrices and vocab tables are kept packed when their dtype has a runtime
+// kernel; norms and tiny vectors are dequantized to f32.
+func LoadLlamaModelWithOptions(gguf *GGUFFile, opts LlamaLoadOptions) (*LlamaModel, error) {
 	defer func() {
 		_ = gguf.Close()
 	}()
@@ -298,9 +311,10 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	cfg.QKPermuted = (cfg.Architecture == "llama")
 
 	// Cap context to keep KV cache reasonable on small machines.
-	if cfg.SeqLen > 2048 {
-		fmt.Printf("[tongue/model] capping seq_len from %d to 2048\n", cfg.SeqLen)
-		cfg.SeqLen = 2048
+	maxSeqLen := normalizeMaxSeqLen(opts.MaxSeqLen)
+	if cfg.SeqLen > maxSeqLen {
+		fmt.Printf("[tongue/model] capping seq_len from %d to %d\n", cfg.SeqLen, maxSeqLen)
+		cfg.SeqLen = maxSeqLen
 	}
 
 	w, err := loadWeights(gguf, &cfg)
@@ -323,6 +337,16 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 		cfg.HeadDim, cfg.NumHeads*cfg.HeadDim, cfg.VocabSize, hasBias, hasQKNorm, cfg.QKPermuted)
 
 	return &LlamaModel{Config: cfg, Weights: *w, State: state}, nil
+}
+
+func normalizeMaxSeqLen(n int) int {
+	if n <= 0 {
+		return DefaultMaxSeqLen
+	}
+	if n < minMaxSeqLen {
+		return minMaxSeqLen
+	}
+	return n
 }
 
 func deriveBaseModelLabel(m GGUFMetadata) string {

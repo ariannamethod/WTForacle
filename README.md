@@ -201,6 +201,8 @@ that F32 cost is now optional. the **packed path** keeps GGUF layer weights and 
 
 for Qwen3-sized local runs, the canonical notorch packed matvec exposes `NT_QMV_THREAD_MIN` to lower the row-threading threshold after measuring your host. WTForacle keeps notorch's default unchanged, but `NT_QMV_THREAD_MIN=1000000 ./wtforacle ...` can materially improve Qwen3-Q8 wall time on neo-class CPUs.
 
+runtime context still defaults to 2048 tokens, but the Qwen3 KV cache is large. use `-ctx N` or `WTFORACLE_CTX=N` to cap runtime context for short oracle runs: `-ctx 512` Qwen3 Q8 i8 smoke preserved the identity anchor while dropping peak memory footprint to about **803 MB** on neo.
+
 an experimental approximate fast path is available as `WTF_QMATVEC_I8=1`. It quantizes activations to int8 per matvec and uses canonical notorch's packed integer kernels for `Q4_0`, `Q8_0`, and `Q6_K`, falling back to the exact packed path for other dtypes. Qwen3 Q8 packed-table + streaming-loader main and holdout gates pass under it, but it stays opt-in until more runtime surfaces are covered.
 
 **prompt format:**

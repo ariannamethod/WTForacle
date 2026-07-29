@@ -122,6 +122,18 @@ func TestPickWeightsPathMissingDefaultsToQwen(t *testing.T) {
 	}
 }
 
+func TestParseContextCap(t *testing.T) {
+	if got := parseContextCap("512"); got != 512 {
+		t.Fatalf("parseContextCap = %d, want 512", got)
+	}
+	if got := parseContextCap(""); got != 2048 {
+		t.Fatalf("empty parseContextCap = %d, want default 2048", got)
+	}
+	if got := parseContextCap("nonsense"); got != 2048 {
+		t.Fatalf("invalid parseContextCap = %d, want default 2048", got)
+	}
+}
+
 func TestGenerateOnceReportsGuardedResponse(t *testing.T) {
 	got, guarded := generateOnce(nil, nil, "who are you", 8, 0.2, 0.9, true, false, true)
 	if !guarded {

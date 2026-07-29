@@ -27,6 +27,7 @@ import (
 
 const (
 	weightsEnvVar          = "WTFORACLE_WEIGHTS"
+	contextEnvVar          = "WTFORACLE_CTX"
 	qwen3DefaultWeightFile = "wtforacle_qwen3_0p6b_long_v1_step300_q8_0.gguf"
 	legacyWeightFile       = "wtf360_v2_q4_0.gguf"
 )
@@ -49,6 +50,7 @@ const systemPrompt = "" +
 
 func main() {
 	weightsFlag := flag.String("weights", "", "path to GGUF weights (default: "+weightsEnvVar+" or ./wtfweights/"+qwen3DefaultWeightFile+")")
+	ctxTokens := flag.Int("ctx", defaultContextCap(), "runtime context tokens (default: "+contextEnvVar+" or 2048)")
 	prompt := flag.String("prompt", "", "one-shot prompt (omit to enter REPL)")
 	maxTokens := flag.Int("max", 200, "max tokens to generate")
 	temp := flag.Float64("temp", 0.9, "sampling temperature")
@@ -62,7 +64,7 @@ func main() {
 
 	weights := resolveWeightsPath(*weightsFlag)
 
-	model, tokenizer := loadModel(weights)
+	model, tokenizer := loadModel(weights, *ctxTokens)
 
 	if *batchPath != "" {
 		if err := runBatch(model, tokenizer, *batchPath, *batchOut, *maxTokens, float32(*temp), float32(*topP),
@@ -113,6 +115,22 @@ func pickWeightsPath(explicit, env, exeDir, cwd string, exists func(string) bool
 	return filepath.Join("wtfweights", qwen3DefaultWeightFile)
 }
 
+func defaultContextCap() int {
+	return parseContextCap(os.Getenv(contextEnvVar))
+}
+
+func parseContextCap(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return wtf.DefaultMaxSeqLen
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return wtf.DefaultMaxSeqLen
+	}
+	return n
+}
+
 func defaultWeightCandidates(exeDir, cwd string) []string {
 	bases := []string{exeDir, cwd}
 	files := []string{qwen3DefaultWeightFile, legacyWeightFile}
@@ -133,14 +151,14 @@ func regularFileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func loadModel(path string) (*wtf.LlamaModel, *wtf.Tokenizer) {
+func loadModel(path string, ctxTokens int) (*wtf.LlamaModel, *wtf.Tokenizer) {
 	fmt.Fprintf(os.Stderr, "[wtf] loading %s\n", path)
 	gguf, err := wtf.LoadGGUF(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading GGUF: %v\n", err)
 		os.Exit(1)
 	}
-	model, err := wtf.LoadLlamaModel(gguf)
+	model, err := wtf.LoadLlamaModelWithOptions(gguf, wtf.LlamaLoadOptions{MaxSeqLen: ctxTokens})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading model: %v\n", err)
 		os.Exit(1)
