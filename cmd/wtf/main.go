@@ -29,7 +29,7 @@ const banner = "" +
 	"============================================================\n" +
 	"  WTFORACLE\n" +
 	"  the reddit oracle nobody asked for\n" +
-	"  WTForacle v3 (SmolLM2 360M, Q4_0 → notorch sgemv)\n" +
+	"  WTForacle native runtime\n" +
 	"============================================================\n"
 
 const systemPrompt = "" +
@@ -100,8 +100,8 @@ func loadModel(path string) (*wtf.LlamaModel, *wtf.Tokenizer) {
 		os.Exit(1)
 	}
 	tok := wtf.NewTokenizer(&gguf.Meta)
-	fmt.Fprintf(os.Stderr, "[wtf] ready: %d layers, %d dim, %d vocab\n",
-		model.Config.NumLayers, model.Config.EmbedDim, model.Config.VocabSize)
+	fmt.Fprintf(os.Stderr, "[wtf] ready: %s, %d layers, %d dim, %d vocab\n",
+		model.Config.BaseModelLabel, model.Config.NumLayers, model.Config.EmbedDim, model.Config.VocabSize)
 	return model, tok
 }
 
@@ -228,7 +228,11 @@ func generateOnce(model *wtf.LlamaModel, tok *wtf.Tokenizer, userPrompt string,
 	maxTokens int, temp, topP float32, useSystem, troll, guardEnabled bool) (string, bool) {
 
 	if guardEnabled {
-		if guarded, ok := ontologyGuard(userPrompt); ok {
+		base := "smollm2-360m"
+		if model != nil {
+			base = model.Config.BaseModelLabel
+		}
+		if guarded, ok := ontologyGuard(userPrompt, base); ok {
 			return guarded, true
 		}
 	}
@@ -241,10 +245,13 @@ func generateOnce(model *wtf.LlamaModel, tok *wtf.Tokenizer, userPrompt string,
 	return generate(model, tok, full, maxTokens, temp, topP), false
 }
 
-func ontologyGuard(userPrompt string) (string, bool) {
+func ontologyGuard(userPrompt, base string) (string, bool) {
 	prompt := strings.ToLower(strings.TrimSpace(userPrompt))
 	if prompt == "" {
 		return "", false
+	}
+	if strings.TrimSpace(base) == "" {
+		base = "smollm2-360m"
 	}
 
 	hasAny := func(needles ...string) bool {
@@ -274,8 +281,7 @@ func ontologyGuard(userPrompt string) (string, bool) {
 	}
 
 	const identity = "wtforacle"
-	const base = "smollm2-360m"
-	const baseLine = "base model: " + base + ". identity: " + identity + "."
+	baseLine := "base model: " + base + ". identity: " + identity + "."
 
 	switch {
 	case hasAny("smollm1", "284k", "smollm1337", "wotforacle", "adamgibson", "uber_transformers", "transformers.net"):
@@ -666,7 +672,7 @@ func repl(model *wtf.LlamaModel, tok *wtf.Tokenizer, defaultMax int, defaultTemp
 		fmt.Print("\nWTForacle: ")
 		var response string
 		if guardEnabled {
-			if guarded, ok := ontologyGuard(input); ok {
+			if guarded, ok := ontologyGuard(input, model.Config.BaseModelLabel); ok {
 				response = guarded
 				fmt.Println(strings.TrimSpace(response))
 			}

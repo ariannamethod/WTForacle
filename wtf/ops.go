@@ -31,6 +31,13 @@ func RMSNormInto(out, x, w []float32, eps float32) {
 	}
 }
 
+// RMSNormHeads applies the same per-head RMSNorm weight to each attention head.
+func RMSNormHeads(x, w []float32, heads, headDim int, eps float32) {
+	for h := 0; h < heads; h++ {
+		RMSNorm(x[h*headDim:(h+1)*headDim], w, eps)
+	}
+}
+
 // Softmax computes softmax in-place over x[0:n].
 func Softmax(x []float32, n int) {
 	maxv := x[0]

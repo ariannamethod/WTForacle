@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"strings"
 )
 
 // LlamaModel is a loaded LLaMA-arch model ready for inference.
@@ -29,16 +30,18 @@ type LlamaModel struct {
 
 // LlamaConfig holds model dimensions.
 type LlamaConfig struct {
-	NumLayers  int
-	EmbedDim   int
-	NumHeads   int
-	NumKVHeads int
-	HeadDim    int
-	VocabSize  int
-	SeqLen     int
-	IntermSize int
-	RMSNormEps float32
-	RopeTheta  float32
+	Architecture   string
+	BaseModelLabel string
+	NumLayers      int
+	EmbedDim       int
+	NumHeads       int
+	NumKVHeads     int
+	HeadDim        int
+	VocabSize      int
+	SeqLen         int
+	IntermSize     int
+	RMSNormEps     float32
+	RopeTheta      float32
 	// QKPermuted — convert_hf_to_gguf.py interleaves Q/K halves for
 	// LLaMA-arch models. We un-permute after matmul so half-split RoPE works.
 	QKPermuted bool
@@ -66,6 +69,9 @@ type LlamaLayerWeights struct {
 	BK []float32
 	BV []float32
 	BO []float32
+
+	QNorm []float32 // optional Qwen3 per-head RMSNorm [head_dim]
+	KNorm []float32
 
 	WGate QW // [interm, dim]
 	WUp   QW // [interm, dim]
@@ -107,6 +113,9 @@ func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
 	if err != nil {
 		return QW{}, err
 	}
+	if err := validateMatrixTensor(info, name, m, k); err != nil {
+		return QW{}, err
+	}
 	dt := int(info.Type)
 	if qmatvecSupported(dt) {
 		packed := make([]byte, len(data))
@@ -120,11 +129,22 @@ func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
 	return QW{F32: f32, Dtype: dt, M: m, K: k}, nil
 }
 
+func validateMatrixTensor(info *GGUFTensorInfo, name string, m, k int) error {
+	if info.NDims != 2 {
+		return fmt.Errorf("%s: expected 2D matrix [%d,%d], got %dD", name, m, k, info.NDims)
+	}
+	if info.Dims[0] != uint64(k) || info.Dims[1] != uint64(m) {
+		return fmt.Errorf("%s: GGUF dims=[%d,%d], expected [k=%d,m=%d] for matrix [%d,%d]",
+			name, info.Dims[0], info.Dims[1], k, m, m, k)
+	}
+	return nil
+}
+
 // LlamaState holds runtime buffers + KV cache.
 type LlamaState struct {
 	X      []float32 // hidden state [dim]
 	XB     []float32 // post-norm scratch [dim]
-	XB2    []float32 // attention output scratch [dim]
+	XB2    []float32 // attention output scratch [n_heads*head_dim]
 	HB     []float32 // MLP gate scratch [interm]
 	HB2    []float32 // MLP up scratch [interm]
 	Q      []float32 // [n_heads*head_dim]
@@ -149,28 +169,27 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	m := gguf.Meta
 
 	cfg := LlamaConfig{
-		NumLayers:  m.NumLayers,
-		EmbedDim:   m.EmbedDim,
-		NumHeads:   m.NumHeads,
-		NumKVHeads: m.NumKVHeads,
-		HeadDim:    m.HeadDim,
-		VocabSize:  m.VocabSize,
-		SeqLen:     m.SeqLen,
-		IntermSize: m.IntermSize,
-		RMSNormEps: m.RMSNormEps,
-		RopeTheta:  m.RopeTheta,
+		Architecture:   m.Architecture,
+		BaseModelLabel: deriveBaseModelLabel(m),
+		NumLayers:      m.NumLayers,
+		EmbedDim:       m.EmbedDim,
+		NumHeads:       m.NumHeads,
+		NumKVHeads:     m.NumKVHeads,
+		HeadDim:        m.HeadDim,
+		VocabSize:      m.VocabSize,
+		SeqLen:         m.SeqLen,
+		IntermSize:     m.IntermSize,
+		RMSNormEps:     m.RMSNormEps,
+		RopeTheta:      m.RopeTheta,
 	}
 	if cfg.HeadDim == 0 && cfg.NumHeads > 0 {
 		cfg.HeadDim = cfg.EmbedDim / cfg.NumHeads
 	}
-
-	arch := "llama"
-	if v, ok := m.KV["general.architecture"]; ok {
-		if s, ok := v.(string); ok {
-			arch = s
-		}
+	if m.KeyHeadDim > 0 && m.ValueHeadDim > 0 && m.KeyHeadDim != m.ValueHeadDim {
+		return nil, fmt.Errorf("unsupported attention head dims: key=%d value=%d", m.KeyHeadDim, m.ValueHeadDim)
 	}
-	cfg.QKPermuted = (arch == "llama")
+
+	cfg.QKPermuted = (cfg.Architecture == "llama")
 
 	// Cap context to keep KV cache reasonable on small machines.
 	if cfg.SeqLen > 2048 {
@@ -192,10 +211,32 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	precomputeRoPE(&state, &cfg)
 
 	hasBias := w.Layers[0].BQ != nil
-	fmt.Printf("[tongue/model] loaded: %d layers, %d dim, %d heads, %d kv_heads, %d vocab, bias=%v, qk_permuted=%v\n",
-		cfg.NumLayers, cfg.EmbedDim, cfg.NumHeads, cfg.NumKVHeads, cfg.VocabSize, hasBias, cfg.QKPermuted)
+	hasQKNorm := w.Layers[0].QNorm != nil || w.Layers[0].KNorm != nil
+	fmt.Printf("[tongue/model] loaded: arch=%s base=%s layers=%d dim=%d heads=%d kv_heads=%d head_dim=%d attn_dim=%d vocab=%d bias=%v qk_norm=%v qk_permuted=%v\n",
+		cfg.Architecture, cfg.BaseModelLabel, cfg.NumLayers, cfg.EmbedDim, cfg.NumHeads, cfg.NumKVHeads,
+		cfg.HeadDim, cfg.NumHeads*cfg.HeadDim, cfg.VocabSize, hasBias, hasQKNorm, cfg.QKPermuted)
 
 	return &LlamaModel{Config: cfg, Weights: *w, State: state}, nil
+}
+
+func deriveBaseModelLabel(m GGUFMetadata) string {
+	name := ""
+	if v, ok := m.KV["general.name"]; ok {
+		if s, ok := v.(string); ok {
+			name = strings.ToLower(s)
+		}
+	}
+	arch := strings.ToLower(m.Architecture)
+	if arch == "qwen3" || strings.Contains(name, "qwen3") {
+		if m.EmbedDim == 1024 && m.NumLayers == 28 {
+			return "qwen3-0.6b-base"
+		}
+		return "qwen3-base"
+	}
+	if strings.Contains(name, "smollm2") || (m.EmbedDim == 960 && m.NumLayers == 32) {
+		return "smollm2-360m"
+	}
+	return arch
 }
 
 // loadWeights resolves every tensor in the GGUF and dequantizes it to F32.
@@ -266,6 +307,13 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 		l.BV, _ = getF32TensorOptional(gguf, prefix+"attn_v.bias", kvDim)
 		l.BO, _ = getF32TensorOptional(gguf, prefix+"attn_output.bias", dim)
 
+		if l.QNorm, err = getF32TensorOptional(gguf, prefix+"attn_q_norm.weight", cfg.HeadDim); err != nil {
+			return nil, fmt.Errorf("layer %d attn_q_norm: %w", i, err)
+		}
+		if l.KNorm, err = getF32TensorOptional(gguf, prefix+"attn_k_norm.weight", cfg.HeadDim); err != nil {
+			return nil, fmt.Errorf("layer %d attn_k_norm: %w", i, err)
+		}
+
 		if l.WGate, err = loadQW(gguf, prefix+"ffn_gate.weight", interm, dim); err != nil {
 			return nil, fmt.Errorf("layer %d ffn_gate: %w", i, err)
 		}
@@ -309,7 +357,7 @@ func allocState(cfg *LlamaConfig) LlamaState {
 	return LlamaState{
 		X:          make([]float32, cfg.EmbedDim),
 		XB:         make([]float32, cfg.EmbedDim),
-		XB2:        make([]float32, cfg.EmbedDim),
+		XB2:        make([]float32, cfg.NumHeads*cfg.HeadDim),
 		HB:         make([]float32, cfg.IntermSize),
 		HB2:        make([]float32, cfg.IntermSize),
 		Q:          make([]float32, cfg.NumHeads*cfg.HeadDim),
@@ -407,6 +455,12 @@ func (m *LlamaModel) Forward(token int, pos int) {
 		if cfg.QKPermuted {
 			unpermuteQK(s.Q, cfg.NumHeads, hd)
 			unpermuteQK(s.K, cfg.NumKVHeads, hd)
+		}
+		if l.QNorm != nil {
+			RMSNormHeads(s.Q, l.QNorm, cfg.NumHeads, hd, cfg.RMSNormEps)
+		}
+		if l.KNorm != nil {
+			RMSNormHeads(s.K, l.KNorm, cfg.NumKVHeads, hd, cfg.RMSNormEps)
 		}
 
 		// RoPE on Q and K

@@ -48,29 +48,32 @@ const (
 	ggmlTypeQ4_1 = 3
 	ggmlTypeQ5_0 = 6
 	ggmlTypeQ5_1 = 7
-	ggmlTypeQ8_0  = 8
-	ggmlTypeQ8_1  = 9
-	ggmlTypeQ2_K  = 10
-	ggmlTypeQ3_K  = 11
-	ggmlTypeQ4_K  = 12
-	ggmlTypeQ5_K  = 13
-	ggmlTypeQ6_K  = 14
+	ggmlTypeQ8_0 = 8
+	ggmlTypeQ8_1 = 9
+	ggmlTypeQ2_K = 10
+	ggmlTypeQ3_K = 11
+	ggmlTypeQ4_K = 12
+	ggmlTypeQ5_K = 13
+	ggmlTypeQ6_K = 14
 )
 
 // GGUFMetadata holds parsed metadata
 type GGUFMetadata struct {
 	// Model architecture
-	NumLayers     int
-	EmbedDim      int
-	NumHeads      int
-	NumKVHeads    int
-	HeadDim       int
-	VocabSize     int
-	SeqLen        int
-	IntermSize    int // MLP intermediate size
-	RMSNormEps    float32
-	RopeTheta     float32
-	RopeFreqBase  float32
+	Architecture string
+	NumLayers    int
+	EmbedDim     int
+	NumHeads     int
+	NumKVHeads   int
+	HeadDim      int
+	KeyHeadDim   int
+	ValueHeadDim int
+	VocabSize    int
+	SeqLen       int
+	IntermSize   int // MLP intermediate size
+	RMSNormEps   float32
+	RopeTheta    float32
+	RopeFreqBase float32
 
 	// Tokenizer
 	TokenList      []string
@@ -415,7 +418,7 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 // parseMetadata extracts model config from GGUF KV pairs
 func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 	meta := GGUFMetadata{
-		KV:        kv,
+		KV:         kv,
 		RMSNormEps: 1e-5,
 		RopeTheta:  10000.0,
 		BosID:      1,
@@ -429,6 +432,7 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 			arch = s
 		}
 	}
+	meta.Architecture = arch
 
 	// Model dimensions
 	if v, ok := kv[arch+".block_count"]; ok {
@@ -452,12 +456,22 @@ func parseMetadata(kv map[string]interface{}) GGUFMetadata {
 	if v, ok := kv[arch+".attention.layer_norm_rms_epsilon"]; ok {
 		meta.RMSNormEps = toFloat32(v)
 	}
+	if v, ok := kv[arch+".attention.key_length"]; ok {
+		meta.KeyHeadDim = toInt(v)
+	}
+	if v, ok := kv[arch+".attention.value_length"]; ok {
+		meta.ValueHeadDim = toInt(v)
+	}
 	if v, ok := kv[arch+".rope.freq_base"]; ok {
 		meta.RopeTheta = toFloat32(v)
 	}
 
 	// Derived
-	if meta.NumHeads > 0 && meta.EmbedDim > 0 {
+	if meta.KeyHeadDim > 0 {
+		meta.HeadDim = meta.KeyHeadDim
+	} else if meta.ValueHeadDim > 0 {
+		meta.HeadDim = meta.ValueHeadDim
+	} else if meta.NumHeads > 0 && meta.EmbedDim > 0 {
 		meta.HeadDim = meta.EmbedDim / meta.NumHeads
 	}
 	if meta.NumKVHeads == 0 {
