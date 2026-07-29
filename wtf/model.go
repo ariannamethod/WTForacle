@@ -92,6 +92,9 @@ type QW struct {
 // weight is packed, else cblas sgemv on the f32 fallback.
 func (w *QW) matvec(out, x []float32) {
 	if w.Packed != nil {
+		if useQmatvecI8 && qmatvecI8(out, w.Packed, w.Dtype, x, w.M, w.K) {
+			return
+		}
 		qmatvec(out, w.Packed, w.Dtype, x, w.M, w.K)
 		return
 	}

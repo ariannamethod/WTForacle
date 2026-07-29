@@ -48,6 +48,11 @@ void wtf_sgemv_strided(float* out, const float* W, int lda,
 int wtf_qmatvec(float* out, const uint8_t* Wq, int dtype,
                 const float* x, int m, int k);
 
+// Approximate fast path: activation is quantized to int8 per call before
+// multiplying against packed weights. Supports Q4_0/Q8_0/Q6_K.
+int wtf_qmatvec_i8(float* out, const uint8_t* Wq, int dtype,
+                   const float* x, int m, int k);
+
 #ifdef __cplusplus
 }
 #endif

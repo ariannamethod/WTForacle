@@ -439,6 +439,11 @@ void nt_blas_matvec(float *out, const float *W, const float *x, int m, int n);
 int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
                const float *x, int m, int k);
 
+// Approximate packed matvec with per-call int8 activation quantization.
+// Supports Q4_0/Q8_0/Q6_K. Returns 0 on success, -1 if unsupported.
+int nt_qmatvec_i8(float *out, const uint8_t *Wq, int dtype,
+                  const float *x, int m, int k);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROFILER — op timing + memory tracking
 // ═══════════════════════════════════════════════════════════════════════════════

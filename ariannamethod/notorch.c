@@ -3635,3 +3635,265 @@ int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
     for (int t = 0; t < launched; t++) pthread_join(th[t], NULL);
     return 0;
 }
+
+// ── int8 dynamic-activation-quant matvec ───────────────────────────────────
+// Quantize the activation to per-32-block symmetric int8 once, then dot it
+// against packed weights with integer accumulation. This is approximate:
+// nt_qmatvec remains the exact f32-activation reference.
+
+static void nt_quant_act_q8(const float *x, int k, int8_t *qa, float *da) {
+    int nb = k / 32;
+    for (int b = 0; b < nb; b++) {
+        const float *xb = x + (long)b * 32;
+        float amax = 0.0f;
+        for (int i = 0; i < 32; i++) {
+            float a = fabsf(xb[i]);
+            if (a > amax) amax = a;
+        }
+        float d = amax / 127.0f;
+        float id = (d > 0.0f) ? 1.0f / d : 0.0f;
+        da[b] = d;
+        for (int i = 0; i < 32; i++) {
+            int q = (int)lrintf(xb[i] * id);
+            if (q > 127) q = 127;
+            else if (q < -127) q = -127;
+            qa[(long)b * 32 + i] = (int8_t)q;
+        }
+    }
+}
+
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+static void nt_q4_0_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 32;
+    const uint8x16_t mask0f = vdupq_n_u8(0x0F);
+    const int8x16_t eight = vdupq_n_s8(8);
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 18;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; b++) {
+            const uint8_t *blk = rb + (long)b * 18;
+            float d_w = nt_f16_to_f32((uint16_t)(blk[0] | (blk[1] << 8)));
+            const int8_t *qab = qa + (long)b * 32;
+            uint8x16_t packed = vld1q_u8(blk + 2);
+            int8x16_t lo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(packed, mask0f)), eight);
+            int8x16_t hi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(packed, 4)), eight);
+            int32x4_t s4 = vdupq_n_s32(0);
+            s4 = vdotq_s32(s4, lo, vld1q_s8(qab));
+            s4 = vdotq_s32(s4, hi, vld1q_s8(qab + 16));
+            acc += d_w * da[b] * (float)vaddvq_s32(s4);
+        }
+        out[row] = acc;
+    }
+}
+#else
+static void nt_q4_0_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 18;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; b++) {
+            const uint8_t *blk = rb + (long)b * 18;
+            float d_w = nt_f16_to_f32((uint16_t)(blk[0] | (blk[1] << 8)));
+            const int8_t *qab = qa + (long)b * 32;
+            int32_t s = 0;
+            for (int i = 0; i < 16; i++) {
+                int lo = (int)(blk[2 + i] & 0x0F) - 8;
+                int hi = (int)(blk[2 + i] >> 4) - 8;
+                s += lo * qab[i];
+                s += hi * qab[i + 16];
+            }
+            acc += d_w * da[b] * (float)s;
+        }
+        out[row] = acc;
+    }
+}
+#endif
+
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+static void nt_q8_0_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 34;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; b++) {
+            const uint8_t *blk = rb + (long)b * 34;
+            float d_w = nt_f16_to_f32((uint16_t)(blk[0] | (blk[1] << 8)));
+            const int8_t *wq = (const int8_t *)(blk + 2);
+            const int8_t *qab = qa + (long)b * 32;
+            int32x4_t s4 = vdupq_n_s32(0);
+            s4 = vdotq_s32(s4, vld1q_s8(wq), vld1q_s8(qab));
+            s4 = vdotq_s32(s4, vld1q_s8(wq + 16), vld1q_s8(qab + 16));
+            acc += d_w * da[b] * (float)vaddvq_s32(s4);
+        }
+        out[row] = acc;
+    }
+}
+#else
+static void nt_q8_0_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 32;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 34;
+        float acc = 0.0f;
+        for (int b = 0; b < nb; b++) {
+            const uint8_t *blk = rb + (long)b * 34;
+            float d_w = nt_f16_to_f32((uint16_t)(blk[0] | (blk[1] << 8)));
+            const int8_t *wq = (const int8_t *)(blk + 2);
+            const int8_t *qab = qa + (long)b * 32;
+            int32_t s = 0;
+            for (int i = 0; i < 32; i++) s += (int32_t)wq[i] * (int32_t)qab[i];
+            acc += d_w * da[b] * (float)s;
+        }
+        out[row] = acc;
+    }
+}
+#endif
+
+#if defined(__AVX2__) && defined(__FMA__)
+static void nt_q6_k_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 256;
+    const __m256i m4 = _mm256_set1_epi8(0x0F), m3 = _mm256_set1_epi8(3),
+                  b32 = _mm256_set1_epi8(32), ones = _mm256_set1_epi16(1);
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 210;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 210, *ql = b, *qh = b + 128;
+            const int8_t *sc = (const int8_t *)(b + 192);
+            float d = nt_f16_to_f32((uint16_t)(b[208] | (b[209] << 8)));
+            const int8_t *qab = qa + (long)blk * 256;
+            const float *dab = da + (long)blk * 8;
+            for (int n = 0; n < 256; n += 128) {
+                const uint8_t *qlh = ql + (n / 128) * 64, *qhh = qh + (n / 128) * 32;
+                __m256i qhv = _mm256_loadu_si256((const __m256i *)qhh);
+                for (int g = 0; g < 4; g++) {
+                    __m256i qlv = _mm256_loadu_si256((const __m256i *)(qlh + (g & 1) * 32));
+                    __m256i lo = (g < 2) ? _mm256_and_si256(qlv, m4)
+                                         : _mm256_and_si256(_mm256_srli_epi16(qlv, 4), m4);
+                    __m256i hi2 = _mm256_and_si256(_mm256_srli_epi16(qhv, 2 * g), m3);
+                    __m256i w = _mm256_sub_epi8(_mm256_or_si256(lo, _mm256_slli_epi16(hi2, 4)), b32);
+                    __m256i xv = _mm256_loadu_si256((const __m256i *)(qab + n + g * 32));
+                    __m256i p = _mm256_maddubs_epi16(_mm256_sign_epi8(w, w),
+                                                     _mm256_sign_epi8(xv, w));
+                    __m256i s32 = _mm256_madd_epi16(p, ones);
+                    __m128i l0 = _mm256_castsi256_si128(s32);
+                    __m128i l1 = _mm256_extracti128_si256(s32, 1);
+                    l0 = _mm_hadd_epi32(l0, l0);
+                    l0 = _mm_hadd_epi32(l0, l0);
+                    l1 = _mm_hadd_epi32(l1, l1);
+                    l1 = _mm_hadd_epi32(l1, l1);
+                    int j0 = n / 16 + g * 2;
+                    acc += d * dab[(n + g * 32) / 32]
+                         * ((float)sc[j0] * (float)_mm_cvtsi128_si32(l0)
+                          + (float)sc[j0 + 1] * (float)_mm_cvtsi128_si32(l1));
+                }
+            }
+        }
+        out[row] = acc;
+    }
+}
+#else
+static void nt_q6_k_rows_i8(float *out, const uint8_t *W, const int8_t *qa,
+                            const float *da, int r0, int r1, int k) {
+    int nb = k / 256;
+    for (int row = r0; row < r1; row++) {
+        const uint8_t *rb = W + (long)row * nb * 210;
+        float acc = 0.0f;
+        for (int blk = 0; blk < nb; blk++) {
+            const uint8_t *b = rb + (long)blk * 210, *ql = b, *qh = b + 128;
+            const int8_t *sc = (const int8_t *)(b + 192);
+            float d = nt_f16_to_f32((uint16_t)(b[208] | (b[209] << 8)));
+            const int8_t *qab = qa + (long)blk * 256;
+            const float *dab = da + (long)blk * 8;
+            int32_t ssum[16];
+            for (int j = 0; j < 16; j++) ssum[j] = 0;
+            for (int n = 0; n < 256; n += 128) {
+                const uint8_t *qlh = ql + (n / 128) * 64, *qhh = qh + (n / 128) * 32;
+                int base = (n / 128) * 8;
+                for (int l = 0; l < 32; l++) {
+                    int is = l / 16;
+                    int q1 = (int)((qlh[l] & 0x0F) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                    int q2 = (int)((qlh[l + 32] & 0x0F) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                    int q3 = (int)((qlh[l] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                    int q4 = (int)((qlh[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                    ssum[base + is + 0] += q1 * (int)qab[n + l];
+                    ssum[base + is + 2] += q2 * (int)qab[n + l + 32];
+                    ssum[base + is + 4] += q3 * (int)qab[n + l + 64];
+                    ssum[base + is + 6] += q4 * (int)qab[n + l + 96];
+                }
+            }
+            for (int j = 0; j < 16; j++)
+                acc += d * (float)sc[j] * dab[j / 2] * (float)ssum[j];
+        }
+        out[row] = acc;
+    }
+}
+#endif
+
+typedef void (*nt_qrows_i8_fn)(float *, const uint8_t *, const int8_t *,
+                               const float *, int, int, int);
+
+typedef struct {
+    nt_qrows_i8_fn fn; float *out; const uint8_t *Wq;
+    const int8_t *qa; const float *da; int r0, r1, k;
+} nt_qjob_i8;
+
+static void *nt_qworker_i8(void *p) {
+    nt_qjob_i8 *j = (nt_qjob_i8 *)p;
+    j->fn(j->out, j->Wq, j->qa, j->da, j->r0, j->r1, j->k);
+    return NULL;
+}
+
+int nt_qmatvec_i8(float *out, const uint8_t *Wq, int dtype,
+                  const float *x, int m, int k) {
+    if (dtype != 2 && dtype != 8 && dtype != 14) return -1;
+    if (k % 32) return -1;
+    if (dtype == 14 && (k % 256)) return -1;
+
+    int nb = k / 32;
+    int8_t *qa = (int8_t *)malloc((size_t)k);
+    float *da = (float *)malloc((size_t)nb * sizeof(float));
+    if (!qa || !da) {
+        free(qa);
+        free(da);
+        return -1;
+    }
+    nt_quant_act_q8(x, k, qa, da);
+
+    nt_qrows_i8_fn fn = (dtype == 2) ? nt_q4_0_rows_i8
+                      : (dtype == 8) ? nt_q8_0_rows_i8
+                                     : nt_q6_k_rows_i8;
+    int nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (nt < 1) nt = 1;
+    if (nt > NT_QMV_MAX_THREADS) nt = NT_QMV_MAX_THREADS;
+    if (nt > m) nt = m;
+    if (nt <= 1 || (long)m * k < nt_qmv_thread_min_work()) {
+        fn(out, Wq, qa, da, 0, m, k);
+        free(qa);
+        free(da);
+        return 0;
+    }
+
+    pthread_t th[NT_QMV_MAX_THREADS];
+    nt_qjob_i8 jobs[NT_QMV_MAX_THREADS];
+    int per = (m + nt - 1) / nt, launched = 0;
+    for (int t = 0; t < nt; t++) {
+        int r0 = t * per, r1 = (r0 + per > m) ? m : r0 + per;
+        if (r0 >= m) break;
+        jobs[t] = (nt_qjob_i8){ fn, out, Wq, qa, da, r0, r1, k };
+        if (pthread_create(&th[t], NULL, nt_qworker_i8, &jobs[t]) != 0) {
+            fn(out, Wq, qa, da, r0, m, k);
+            break;
+        }
+        launched++;
+    }
+    for (int t = 0; t < launched; t++) pthread_join(th[t], NULL);
+    free(qa);
+    free(da);
+    return 0;
+}

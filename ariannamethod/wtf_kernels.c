@@ -170,6 +170,11 @@ int wtf_qmatvec(float* out, const uint8_t* Wq, int dtype,
     return nt_qmatvec(out, Wq, dtype, x, m, k);
 }
 
+int wtf_qmatvec_i8(float* out, const uint8_t* Wq, int dtype,
+                   const float* x, int m, int k) {
+    return nt_qmatvec_i8(out, Wq, dtype, x, m, k);
+}
+
 #ifdef USE_BLAS
   #ifdef ACCELERATE
     #include <Accelerate/Accelerate.h>

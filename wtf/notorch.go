@@ -23,8 +23,17 @@ import "C"
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"unsafe"
 )
+
+var useQmatvecI8 = envFlag("WTF_QMATVEC_I8")
+
+func envFlag(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	return v != "" && v != "0" && v != "false" && v != "off" && v != "no"
+}
 
 // GGML tensor type tags (mirror gguf.h / wtf_kernels.h).
 const (
@@ -71,6 +80,20 @@ func sgemv(out, w, x []float32, m, n int) {
 // no dense-f32 blow-up. Returns false if the dtype has no packed kernel.
 func qmatvec(out []float32, wq []byte, dtype int, x []float32, m, k int) bool {
 	rc := C.wtf_qmatvec(
+		(*C.float)(unsafe.Pointer(&out[0])),
+		(*C.uint8_t)(unsafe.Pointer(&wq[0])),
+		C.int(dtype),
+		(*C.float)(unsafe.Pointer(&x[0])),
+		C.int(m), C.int(k),
+	)
+	return rc == 0
+}
+
+// qmatvecI8 is the approximate fast path: x is quantized to int8 per call and
+// multiplied against packed weights. It is intentionally separate from qmatvec
+// so generation can opt into it only after quality gates pass.
+func qmatvecI8(out []float32, wq []byte, dtype int, x []float32, m, k int) bool {
+	rc := C.wtf_qmatvec_i8(
 		(*C.float)(unsafe.Pointer(&out[0])),
 		(*C.uint8_t)(unsafe.Pointer(&wq[0])),
 		C.int(dtype),

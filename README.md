@@ -201,6 +201,8 @@ that F32 cost is now optional. the **packed path** (branch `feat/packed-qmatvec`
 
 for Qwen3-sized local runs, the canonical notorch packed matvec exposes `NT_QMV_THREAD_MIN` to lower the row-threading threshold after measuring your host. WTForacle keeps notorch's default unchanged, but `NT_QMV_THREAD_MIN=1000000 ./wtforacle ...` can materially improve Qwen3-Q8 wall time on neo-class CPUs.
 
+an experimental approximate fast path is available as `WTF_QMATVEC_I8=1`. It quantizes activations to int8 per matvec and uses canonical notorch's packed integer kernels for `Q4_0`, `Q8_0`, and `Q6_K`, falling back to the exact packed path for other dtypes. Keep it opt-in until Qwen3 identity/language gates pass under it.
+
 **prompt format:**
 
 ```
