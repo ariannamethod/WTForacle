@@ -109,16 +109,19 @@ static void deq_q6_k(const uint8_t* src, float* dst, uint64_t n) {
         const int8_t*  sc = (const int8_t*)(b + 192);
         float d = wtf_f16_to_f32((uint16_t)(b[208] | (b[209] << 8)));
         for (int n_ = 0; n_ < 256; n_ += 128) {
+            const uint8_t* qlh = ql + (n_ / 128) * 64;
+            const uint8_t* qhh = qh + (n_ / 128) * 32;
+            const int8_t*  sch = sc + (n_ / 128) * 8;
             for (int l = 0; l < 32; l++) {
-                int is_ = n_/128*2;
-                uint8_t q0 = ql[n_/2+l] & 0xF, q1 = ql[n_/2+l] >> 4;
-                uint8_t q2 = ql[n_/2+l+32] & 0xF, q3 = ql[n_/2+l+32] >> 4;
-                uint8_t h0 = (qh[n_/4+l] >> 0) & 3, h1 = (qh[n_/4+l] >> 2) & 3;
-                uint8_t h2 = (qh[n_/4+l] >> 4) & 3, h3 = (qh[n_/4+l] >> 6) & 3;
-                dst[i*256 + n_ + l]      = d * (float)sc[is_+0] * (float)((int)(q0 | (h0<<4)) - 32);
-                dst[i*256 + n_ + l + 32] = d * (float)sc[is_+1] * (float)((int)(q1 | (h1<<4)) - 32);
-                dst[i*256 + n_ + l + 64] = d * (float)sc[is_+2] * (float)((int)(q2 | (h2<<4)) - 32);
-                dst[i*256 + n_ + l + 96] = d * (float)sc[is_+3] * (float)((int)(q3 | (h3<<4)) - 32);
+                int is = l / 16;
+                int q1 = (int)((qlh[l]      & 0x0F) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                int q2 = (int)((qlh[l + 32] & 0x0F) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                int q3 = (int)((qlh[l]      >> 4)   | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                int q4 = (int)((qlh[l + 32] >> 4)   | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                dst[i*256 + n_ + l]      = d * (float)sch[is + 0] * (float)q1;
+                dst[i*256 + n_ + l + 32] = d * (float)sch[is + 2] * (float)q2;
+                dst[i*256 + n_ + l + 64] = d * (float)sch[is + 4] * (float)q3;
+                dst[i*256 + n_ + l + 96] = d * (float)sch[is + 6] * (float)q4;
             }
         }
     }
