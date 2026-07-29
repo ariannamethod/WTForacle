@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,46 @@ func TestOntologyGuardUsesQwenBaseLabel(t *testing.T) {
 	}
 }
 
+func TestPickWeightsPathPrefersExplicit(t *testing.T) {
+	got := pickWeightsPath("manual.gguf", "env.gguf", "bin", "repo", fakeExists())
+	if got != "manual.gguf" {
+		t.Fatalf("pickWeightsPath = %q, want explicit path", got)
+	}
+}
+
+func TestPickWeightsPathUsesEnvBeforeDefaults(t *testing.T) {
+	exeDefault := filepath.Join("bin", "wtfweights", qwen3DefaultWeightFile)
+	got := pickWeightsPath("", "env.gguf", "bin", "repo", fakeExists(exeDefault))
+	if got != "env.gguf" {
+		t.Fatalf("pickWeightsPath = %q, want env path", got)
+	}
+}
+
+func TestPickWeightsPathPrefersQwenDefaultOverLegacy(t *testing.T) {
+	exeQwen := filepath.Join("bin", "wtfweights", qwen3DefaultWeightFile)
+	cwdLegacy := filepath.Join("repo", "wtfweights", legacyWeightFile)
+	got := pickWeightsPath("", "", "bin", "repo", fakeExists(exeQwen, cwdLegacy))
+	if got != exeQwen {
+		t.Fatalf("pickWeightsPath = %q, want qwen default %q", got, exeQwen)
+	}
+}
+
+func TestPickWeightsPathFallsBackToLegacy(t *testing.T) {
+	cwdLegacy := filepath.Join("repo", "wtfweights", legacyWeightFile)
+	got := pickWeightsPath("", "", "bin", "repo", fakeExists(cwdLegacy))
+	if got != cwdLegacy {
+		t.Fatalf("pickWeightsPath = %q, want legacy path %q", got, cwdLegacy)
+	}
+}
+
+func TestPickWeightsPathMissingDefaultsToQwen(t *testing.T) {
+	want := filepath.Join("repo", "wtfweights", qwen3DefaultWeightFile)
+	got := pickWeightsPath("", "", "bin", "repo", fakeExists())
+	if got != want {
+		t.Fatalf("pickWeightsPath = %q, want missing default %q", got, want)
+	}
+}
+
 func TestGenerateOnceReportsGuardedResponse(t *testing.T) {
 	got, guarded := generateOnce(nil, nil, "who are you", 8, 0.2, 0.9, true, false, true)
 	if !guarded {
@@ -88,6 +129,16 @@ func TestGenerateOnceReportsGuardedResponse(t *testing.T) {
 	}
 	if !strings.Contains(got, "base model: smollm2-360m") {
 		t.Fatalf("guarded response = %q, want smollm2-360m base model", got)
+	}
+}
+
+func fakeExists(paths ...string) func(string) bool {
+	set := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		set[path] = true
+	}
+	return func(path string) bool {
+		return set[path]
 	}
 }
 

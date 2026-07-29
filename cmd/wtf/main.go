@@ -25,6 +25,12 @@ import (
 	"wtforacle/wtf"
 )
 
+const (
+	weightsEnvVar          = "WTFORACLE_WEIGHTS"
+	qwen3DefaultWeightFile = "wtforacle_qwen3_0p6b_long_v1_step300_q8_0.gguf"
+	legacyWeightFile       = "wtf360_v2_q4_0.gguf"
+)
+
 const banner = "" +
 	"============================================================\n" +
 	"  WTFORACLE\n" +
@@ -42,7 +48,7 @@ const systemPrompt = "" +
 	"if someone asks for code, give the code but call them lazy."
 
 func main() {
-	weightsFlag := flag.String("weights", "", "path to GGUF weights (default: ./wtfweights/wtf360_v2_q4_0.gguf)")
+	weightsFlag := flag.String("weights", "", "path to GGUF weights (default: "+weightsEnvVar+" or ./wtfweights/"+qwen3DefaultWeightFile+")")
 	prompt := flag.String("prompt", "", "one-shot prompt (omit to enter REPL)")
 	maxTokens := flag.Int("max", 200, "max tokens to generate")
 	temp := flag.Float64("temp", 0.9, "sampling temperature")
@@ -54,14 +60,7 @@ func main() {
 	batchOut := flag.String("out-jsonl", "", "write batch JSONL responses to this file (default: stdout)")
 	flag.Parse()
 
-	weights := *weightsFlag
-	if weights == "" {
-		exe, _ := os.Executable()
-		weights = filepath.Join(filepath.Dir(exe), "wtfweights", "wtf360_v2_q4_0.gguf")
-		if _, err := os.Stat(weights); err != nil {
-			weights = "wtfweights/wtf360_v2_q4_0.gguf"
-		}
-	}
+	weights := resolveWeightsPath(*weightsFlag)
 
 	model, tokenizer := loadModel(weights)
 
@@ -85,6 +84,53 @@ func main() {
 	}
 
 	repl(model, tokenizer, *maxTokens, *temp, *topP, !*noGuardFlag)
+}
+
+func resolveWeightsPath(explicit string) string {
+	exeDir := ""
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
+	cwd, _ := os.Getwd()
+	return pickWeightsPath(explicit, os.Getenv(weightsEnvVar), exeDir, cwd, regularFileExists)
+}
+
+func pickWeightsPath(explicit, env, exeDir, cwd string, exists func(string) bool) string {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		return explicit
+	}
+	if env = strings.TrimSpace(env); env != "" {
+		return env
+	}
+	for _, candidate := range defaultWeightCandidates(exeDir, cwd) {
+		if exists(candidate) {
+			return candidate
+		}
+	}
+	if cwd != "" {
+		return filepath.Join(cwd, "wtfweights", qwen3DefaultWeightFile)
+	}
+	return filepath.Join("wtfweights", qwen3DefaultWeightFile)
+}
+
+func defaultWeightCandidates(exeDir, cwd string) []string {
+	bases := []string{exeDir, cwd}
+	files := []string{qwen3DefaultWeightFile, legacyWeightFile}
+	candidates := make([]string, 0, len(bases)*len(files))
+	for _, file := range files {
+		for _, base := range bases {
+			if base == "" {
+				continue
+			}
+			candidates = append(candidates, filepath.Join(base, "wtfweights", file))
+		}
+	}
+	return candidates
+}
+
+func regularFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func loadModel(path string) (*wtf.LlamaModel, *wtf.Tokenizer) {

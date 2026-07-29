@@ -11,7 +11,7 @@
 
 > *sir this is reddit* (c) reddit  
 
-360M of pure cynicism. single Go binary. notorch under the hood. no PyTorch. no Python. no GPU. no apologies. runs on a toaster.
+small-model cynicism. original SmolLM2-360M weights, plus the local Qwen3-0.6B candidate. single Go binary. notorch under the hood. no PyTorch. no Python. no GPU. no apologies. runs on a toaster.
 
 part of the [arianna method](https://github.com/ariannamethod) ecology — same ecosystem that produced [haze](https://github.com/ariannamethod/haze) (the philosophical schizo), [pitomadom](https://github.com/ariannamethod/pitomadom) (the hebrew prophet), and [leo](https://github.com/ariannamethod/leo) (the resonant one). wtforacle is the one that went to reddit instead of therapy.
 
@@ -101,13 +101,22 @@ make run
 
 three commands. one Go binary. ~9.8 MB of cynicism that calls into vendored notorch (BLAS sgemv on Apple Accelerate / OpenBLAS) for the heavy linear algebra. no `pip install`, no `conda create`, no `nvidia-smi`. just `make run` and regret.
 
+local Arianna shared Qwen3 candidate:
+
+```bash
+make qwen3-weights-local
+make run
+```
+
+`wtforacle` resolves weights in this order: `-weights`, `WTFORACLE_WEIGHTS`, `./wtfweights/wtforacle_qwen3_0p6b_long_v1_step300_q8_0.gguf`, then the legacy SmolLM2 `./wtfweights/wtf360_v2_q4_0.gguf`.
+
 LIMPHA memory (SQLite + FTS5) is built into the binary. no extra install, no daemon to start. first launch auto-creates `~/.wtforacle/limpha.db` and starts logging.
 
 ```
 ============================================================
   WTFORACLE
   the reddit oracle nobody asked for
-  WTForacle v3 (SmolLM2 360M, Q4_0 → notorch sgemv)
+  WTForacle native runtime
 ============================================================
 
   memory: online (limpha)
@@ -142,6 +151,8 @@ echo "is python good" | ./wtforacle -prompt "is python good" -max 80 -troll
 ---
 
 ## architecture
+
+the native runtime currently supports the original SmolLM2-360M oracle and the local Qwen3-0.6B SFT candidate. Qwen3 uses 28 layers, 1024 dim, 16 Q heads, 8 KV heads, 128 head dim, Q/K RMSNorm, and a 151936-token vocabulary. SmolLM2 remains the public small download path.
 
 ```
 SmolLM2 360M — 360M parameters
@@ -291,9 +302,13 @@ adapted from [yent](https://github.com/ariannamethod/yent)'s LIMPHA subsystem �
 
 | File | Size | Quant | Source |
 |------|------|-------|--------|
+| `wtforacle_qwen3_0p6b_long_v1_step300_q8_0.gguf` | 610MB | Q8_0 | local shared workspace (`make qwen3-weights-local`) |
+| `wtforacle_qwen3_0p6b_long_v1_step300_q5_0_emb_f16.gguf` | 591MB | Q5_0 + F16 embeddings | local shared workspace, smoke-tested but not default |
 | `wtf360_v2_q4_0.gguf` | 229MB | Q4_0 | [HuggingFace](https://huggingface.co/ataeff/WTForacle/tree/main/ws360) |
 
-`make wtf-weights` downloads everything you need. weights are on HuggingFace because git doesn't like 229MB files and neither do we.
+`make wtf-weights` downloads the public SmolLM2 weights. `make qwen3-weights-local` links the trusted Qwen3 Q8_0 artifact from `/Users/ataeff/arianna-shared/wtforacle/quants/qwen3-0p6b-long-v1-step300/`. Q4/K Qwen3 variants are retained as experiment artifacts; they are not promoted as Go runtime defaults.
+
+for arbitrary local GGUF files, use `-weights /path/to/model.gguf` or `WTFORACLE_WEIGHTS=/path/to/model.gguf ./wtforacle`.
 
 ---
 
