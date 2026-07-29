@@ -10,6 +10,7 @@
 #include <float.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLAS BACKEND
@@ -3582,6 +3583,16 @@ static nt_qrows_fn nt_qrows_for(int dtype, int k) {
 }
 
 #define NT_QMV_MAX_THREADS 16
+#define NT_QMV_DEFAULT_THREAD_MIN_WORK (4L << 20)
+
+static long nt_qmv_thread_min_work(void) {
+    static long thread_floor = -1;
+    if (thread_floor < 0) {
+        const char *e = getenv("NT_QMV_THREAD_MIN");
+        thread_floor = (e && atol(e) > 0) ? atol(e) : NT_QMV_DEFAULT_THREAD_MIN_WORK;
+    }
+    return thread_floor;
+}
 
 typedef struct {
     nt_qrows_fn fn; float *out; const uint8_t *Wq; const float *x;
@@ -3606,7 +3617,7 @@ int nt_qmatvec(float *out, const uint8_t *Wq, int dtype,
     if (nt > m) nt = m;
     // Gated high: per-call spawn + 2P+4E asymmetry make fan-out counterproductive for
     // small single-token decode matvecs; only large matvecs (big models / batched) thread.
-    if (nt <= 1 || (long)m * k < (4L << 20)) { fn(out, Wq, x, 0, m, k); return 0; }
+    if (nt <= 1 || (long)m * k < nt_qmv_thread_min_work()) { fn(out, Wq, x, 0, m, k); return 0; }
 
     pthread_t th[NT_QMV_MAX_THREADS];
     nt_qjob   jobs[NT_QMV_MAX_THREADS];

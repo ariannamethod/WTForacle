@@ -199,6 +199,8 @@ why this layout: notorch lives outside the Go package so it can be re-synced fro
 
 that F32 cost is now optional. the **packed path** (branch `feat/packed-qmatvec`) keeps the GGUF weights packed and matvecs them straight through notorch's `nt_qmatvec` — no dense-F32 blow-up. measured on neo (A18 Pro): **RSS 1600 MB → 588 MB (×2.72)**, greedy output byte-identical to the F32 path. the speed lever for the packed path is notorch's int8 dynamic-activation-quant matvec (`nt_qmatvec_i8`, NEON SDOT — **22.9× over scalar f32-dequant** at the kernel level); wiring it through WTForacle's decode end-to-end is in progress. on a 4 GB phone the packed path *is* the answer — Termux's notorch already runs `nt_qmatvec` on aarch64.
 
+for Qwen3-sized local runs, the canonical notorch packed matvec exposes `NT_QMV_THREAD_MIN` to lower the row-threading threshold after measuring your host. WTForacle keeps notorch's default unchanged, but `NT_QMV_THREAD_MIN=1000000 ./wtforacle ...` can materially improve Qwen3-Q8 wall time on neo-class CPUs.
+
 **prompt format:**
 
 ```
