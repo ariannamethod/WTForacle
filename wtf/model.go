@@ -178,6 +178,15 @@ func qtableRowBytes(dtype uint32, cols int) (int, error) {
 	return (cols / blockElems) * blockSize, nil
 }
 
+func ownedTensorBytes(gguf *GGUFFile, data []byte) []byte {
+	if gguf.TensorData == nil {
+		return data
+	}
+	owned := make([]byte, len(data))
+	copy(owned, data)
+	return owned
+}
+
 // loadQW loads the [m,k] matrix named `name`, kept PACKED when nt_qmatvec supports
 // its dtype (bytes copied so the GGUF blob can be freed), else dequantized to f32.
 func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
@@ -190,9 +199,7 @@ func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
 	}
 	dt := int(info.Type)
 	if packedMatvecSupported(dt, k) {
-		packed := make([]byte, len(data))
-		copy(packed, data)
-		return QW{Packed: packed, Dtype: dt, M: m, K: k}, nil
+		return QW{Packed: ownedTensorBytes(gguf, data), Dtype: dt, M: m, K: k}, nil
 	}
 	f32, err := dequantToF32(data, info.Type, m*k)
 	if err != nil {
@@ -216,9 +223,7 @@ func loadQTable(gguf *GGUFFile, name string, rows, cols int) (QTable, error) {
 		if err != nil {
 			return QTable{}, err
 		}
-		packed := make([]byte, len(data))
-		copy(packed, data)
-		return QTable{Packed: packed, Dtype: dt, Rows: rows, Cols: cols, RowBytes: rowBytes}, nil
+		return QTable{Packed: ownedTensorBytes(gguf, data), Dtype: dt, Rows: rows, Cols: cols, RowBytes: rowBytes}, nil
 	}
 	f32, err := dequantToF32(data, info.Type, rows*cols)
 	if err != nil {

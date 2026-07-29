@@ -1,6 +1,9 @@
 package wtf
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +75,44 @@ func TestValidateMatrixTensorCatchesWrongShape(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expected [k=1024,m=2048]") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetTensorStreamsFromFileWhenTensorDataDropped(t *testing.T) {
+	dataOffset := int64(16)
+	tensorOffset := uint64(8)
+	payload := []byte{1, 2, 3, 4}
+	raw := make([]byte, int(dataOffset)+int(tensorOffset)+len(payload))
+	copy(raw[int(dataOffset)+int(tensorOffset):], payload)
+
+	path := filepath.Join(t.TempDir(), "tiny.gguf")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write fake gguf: %v", err)
+	}
+
+	g := &GGUFFile{
+		Path:       path,
+		DataOffset: dataOffset,
+		DataSize:   int64(len(raw)) - dataOffset,
+		Tensors: map[string]*GGUFTensorInfo{
+			"tiny.weight": {
+				Name:   "tiny.weight",
+				NDims:  1,
+				Dims:   [4]uint64{1},
+				Type:   ggmlTypeF32,
+				Offset: tensorOffset,
+			},
+		},
+	}
+
+	got, info, err := g.GetTensor("tiny.weight")
+	if err != nil {
+		t.Fatalf("GetTensor: %v", err)
+	}
+	if info.Name != "tiny.weight" {
+		t.Fatalf("info.Name = %q", info.Name)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("streamed bytes = %v, want %v", got, payload)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -102,8 +103,10 @@ type GGUFTensorInfo struct {
 type GGUFFile struct {
 	Meta       GGUFMetadata
 	Tensors    map[string]*GGUFTensorInfo
-	TensorData []byte // mmap'd or read tensor data blob
+	Path       string // source file for streaming tensor reads
+	TensorData []byte // optional in-memory tensor data blob; nil means stream
 	DataOffset int64  // offset where tensor data starts in file
+	DataSize   int64  // byte size of the tensor data region
 }
 
 func readString(r io.Reader) (string, error) {
@@ -289,7 +292,11 @@ func tensorBytes(info *GGUFTensorInfo) uint64 {
 
 // LoadGGUF loads a GGUF file
 func LoadGGUF(path string) (*GGUFFile, error) {
-	f, err := os.Open(path)
+	sourcePath, err := filepath.Abs(path)
+	if err != nil {
+		sourcePath = path
+	}
+	f, err := os.Open(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("open GGUF: %w", err)
 	}
@@ -384,7 +391,6 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 	alignment := int64(32)
 	dataOffset := ((headerEnd + alignment - 1) / alignment) * alignment
 
-	// Read all tensor data
 	fileInfo, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -394,15 +400,7 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 		return nil, fmt.Errorf("no tensor data (dataOffset=%d, fileSize=%d)", dataOffset, fileInfo.Size())
 	}
 
-	fmt.Printf("[tongue/gguf] data offset=%d size=%.1f MB\n", dataOffset, float64(dataSize)/1024/1024)
-
-	if _, err := f.Seek(dataOffset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	tensorData := make([]byte, dataSize)
-	if _, err := io.ReadFull(f, tensorData); err != nil {
-		return nil, fmt.Errorf("read tensor data: %w", err)
-	}
+	fmt.Printf("[tongue/gguf] data offset=%d size=%.1f MB streamed\n", dataOffset, float64(dataSize)/1024/1024)
 
 	// Parse metadata into structured form
 	meta := parseMetadata(kv)
@@ -410,8 +408,9 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 	return &GGUFFile{
 		Meta:       meta,
 		Tensors:    tensors,
-		TensorData: tensorData,
+		Path:       sourcePath,
 		DataOffset: dataOffset,
+		DataSize:   dataSize,
 	}, nil
 }
 
@@ -558,13 +557,40 @@ func (g *GGUFFile) GetTensor(name string) ([]byte, *GGUFTensorInfo, error) {
 		return nil, nil, fmt.Errorf("tensor not found: %s", name)
 	}
 	size := tensorBytes(info)
+	if size == 0 {
+		return nil, nil, fmt.Errorf("tensor %s has unsupported dtype %d", name, info.Type)
+	}
 	start := info.Offset
 	end := start + size
-	if end > uint64(len(g.TensorData)) {
-		return nil, nil, fmt.Errorf("tensor %s out of bounds: %d + %d > %d",
-			name, start, size, len(g.TensorData))
+	if g.TensorData != nil {
+		if end > uint64(len(g.TensorData)) {
+			return nil, nil, fmt.Errorf("tensor %s out of bounds: %d + %d > %d",
+				name, start, size, len(g.TensorData))
+		}
+		return g.TensorData[start:end], info, nil
 	}
-	return g.TensorData[start:end], info, nil
+	if g.Path == "" {
+		return nil, nil, fmt.Errorf("tensor %s has no in-memory data and no source path", name)
+	}
+	if g.DataSize > 0 && end > uint64(g.DataSize) {
+		return nil, nil, fmt.Errorf("tensor %s out of bounds: %d + %d > %d",
+			name, start, size, g.DataSize)
+	}
+	if size > uint64(int(^uint(0)>>1)) {
+		return nil, nil, fmt.Errorf("tensor %s too large to allocate: %d bytes", name, size)
+	}
+	f, err := os.Open(g.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open GGUF tensor source: %w", err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, int(size))
+	offset := g.DataOffset + int64(start)
+	if _, err := io.ReadFull(io.NewSectionReader(f, offset, int64(size)), buf); err != nil {
+		return nil, nil, fmt.Errorf("read tensor %s: %w", name, err)
+	}
+	return buf, info, nil
 }
 
 // FindTensor searches for a tensor by substring match
