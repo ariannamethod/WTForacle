@@ -181,7 +181,7 @@ WTForacle/
 │   ├── gguf.{c,h}      # full gguf parser (kept for source parity, not linked)
 │   └── wtf_kernels.{c,h}  # public dequant + sgemv wrappers
 ├── wtf/
-│   ├── notorch.go      # cgo: dequantToF32, sgemv, sgemvStrided
+│   ├── notorch.go      # cgo: dequantToF32, qmatvec, sgemv, sgemvStrided
 │   ├── cbridge.c       # one-line bridge so cgo compiles ariannamethod/ sources
 │   ├── model.go        # transformer forward pass
 │   ├── gguf.go, ops.go, sample.go, tokenizer.go, limpha.go
@@ -197,11 +197,11 @@ why this layout: notorch lives outside the Go package so it can be re-synced fro
 | baseline (`-tags blas`, pure-Go Q4_0 matmul) | ~12.0 | 1.0× |
 | notorch path (full F32 dequant + sgemv) | ~20.6 | **1.7×** |
 
-that F32 cost is now optional. the **packed path** (branch `feat/packed-qmatvec`) keeps the GGUF weights packed and matvecs them straight through notorch's `nt_qmatvec` — no dense-F32 blow-up. measured on neo (A18 Pro): **RSS 1600 MB → 588 MB (×2.72)**, greedy output byte-identical to the F32 path. the speed lever for the packed path is notorch's int8 dynamic-activation-quant matvec (`nt_qmatvec_i8`, NEON SDOT — **22.9× over scalar f32-dequant** at the kernel level); wiring it through WTForacle's decode end-to-end is in progress. on a 4 GB phone the packed path *is* the answer — Termux's notorch already runs `nt_qmatvec` on aarch64.
+that F32 cost is now optional. the **packed path** keeps GGUF layer weights and vocab tables packed: layer projections and the tied LM head matvec straight through notorch's `nt_qmatvec`, while token lookup dequantizes only the selected embedding row. measured on neo (A18 Pro), the first packed path cut SmolLM2 Q4_0 RSS **1600 MB → 588 MB (×2.72)** with greedy output byte-identical to the F32 path; Qwen3 Q8 packed-table smoke now holds max resident around **1.03 GB** while still loading from a 604 MB GGUF blob. on a 4 GB phone the packed path *is* the answer — Termux's notorch already runs `nt_qmatvec` on aarch64.
 
 for Qwen3-sized local runs, the canonical notorch packed matvec exposes `NT_QMV_THREAD_MIN` to lower the row-threading threshold after measuring your host. WTForacle keeps notorch's default unchanged, but `NT_QMV_THREAD_MIN=1000000 ./wtforacle ...` can materially improve Qwen3-Q8 wall time on neo-class CPUs.
 
-an experimental approximate fast path is available as `WTF_QMATVEC_I8=1`. It quantizes activations to int8 per matvec and uses canonical notorch's packed integer kernels for `Q4_0`, `Q8_0`, and `Q6_K`, falling back to the exact packed path for other dtypes. Keep it opt-in until Qwen3 identity/language gates pass under it.
+an experimental approximate fast path is available as `WTF_QMATVEC_I8=1`. It quantizes activations to int8 per matvec and uses canonical notorch's packed integer kernels for `Q4_0`, `Q8_0`, and `Q6_K`, falling back to the exact packed path for other dtypes. Qwen3 Q8 packed-table main and holdout gates pass under it, but it stays opt-in until more runtime surfaces are covered.
 
 **prompt format:**
 

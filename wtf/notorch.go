@@ -53,6 +53,25 @@ func dequantToF32(src []byte, dtype uint32, n int) ([]float32, error) {
 		return nil, fmt.Errorf("dequantToF32: n=%d", n)
 	}
 	dst := make([]float32, n)
+	if err := dequantToF32Into(src, dtype, dst, n); err != nil {
+		return nil, err
+	}
+	return dst, nil
+}
+
+// dequantToF32Into unpacks into an existing destination buffer. It is used by
+// packed embedding row lookup, where allocating a new []float32 per token would
+// erase the memory win.
+func dequantToF32Into(src []byte, dtype uint32, dst []float32, n int) error {
+	if n <= 0 {
+		return fmt.Errorf("dequantToF32Into: n=%d", n)
+	}
+	if len(dst) < n {
+		return fmt.Errorf("dequantToF32Into: dst len=%d, need %d", len(dst), n)
+	}
+	if len(src) == 0 {
+		return fmt.Errorf("dequantToF32Into: empty source")
+	}
 	rc := C.wtf_dequant_to_f32(
 		(*C.uint8_t)(unsafe.Pointer(&src[0])),
 		C.int(dtype),
@@ -60,9 +79,9 @@ func dequantToF32(src []byte, dtype uint32, n int) ([]float32, error) {
 		(*C.float)(unsafe.Pointer(&dst[0])),
 	)
 	if rc != 0 {
-		return nil, fmt.Errorf("dequantToF32: unsupported dtype %d", dtype)
+		return fmt.Errorf("dequantToF32: unsupported dtype %d", dtype)
 	}
-	return dst, nil
+	return nil
 }
 
 // sgemv computes out[m] = W[m,n] @ x[n] via cblas_sgemv (Accelerate / OpenBLAS).

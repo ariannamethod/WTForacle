@@ -47,11 +47,13 @@ type LlamaConfig struct {
 	QKPermuted bool
 }
 
-// LlamaWeights holds all weight tensors as contiguous float32 slices.
+// LlamaWeights holds transformer weights. The large vocab tables are kept
+// packed when possible: embedding lookup dequantizes one row, and the tied
+// LM head matvecs directly from packed bytes.
 type LlamaWeights struct {
-	TokenEmbed []float32 // [vocab, dim]
+	TokenEmbed QTable    // [vocab, dim]
 	OutputNorm []float32 // [dim]
-	Output     []float32 // [vocab, dim] — may alias TokenEmbed when tied
+	Output     QTable    // [vocab, dim] — may alias TokenEmbed when tied
 
 	Layers []LlamaLayerWeights
 }
@@ -109,6 +111,73 @@ func qmatvecSupported(dt int) bool {
 	return false
 }
 
+func packedMatvecSupported(dt int, k int) bool {
+	if !qmatvecSupported(dt) {
+		return false
+	}
+	blockElems := ggmlBlockElements(uint32(dt))
+	return blockElems > 0 && k%blockElems == 0
+}
+
+func qtablePackedSupported(dt int, cols int) bool {
+	return dt != dtypeF32 && packedMatvecSupported(dt, cols)
+}
+
+// QTable is a row-major [Rows, Cols] table, usually token_embd/output. It stays
+// packed for quantized/F16 dtypes so WTForacle does not materialize the whole
+// vocab x dim table as f32.
+type QTable struct {
+	Packed   []byte
+	F32      []float32
+	Dtype    int
+	Rows     int
+	Cols     int
+	RowBytes int
+}
+
+func (t *QTable) lookup(out []float32, row int) {
+	if row < 0 || row >= t.Rows {
+		panic(fmt.Sprintf("QTable.lookup: row=%d rows=%d", row, t.Rows))
+	}
+	if len(out) < t.Cols {
+		panic(fmt.Sprintf("QTable.lookup: out len=%d cols=%d", len(out), t.Cols))
+	}
+	if t.Packed != nil {
+		start := row * t.RowBytes
+		end := start + t.RowBytes
+		if err := dequantToF32Into(t.Packed[start:end], uint32(t.Dtype), out, t.Cols); err != nil {
+			panic(fmt.Sprintf("QTable.lookup: %v", err))
+		}
+		return
+	}
+	copy(out, t.F32[row*t.Cols:(row+1)*t.Cols])
+}
+
+func (t *QTable) matvec(out, x []float32) {
+	if t.Packed != nil {
+		if useQmatvecI8 && qmatvecI8(out, t.Packed, t.Dtype, x, t.Rows, t.Cols) {
+			return
+		}
+		if qmatvec(out, t.Packed, t.Dtype, x, t.Rows, t.Cols) {
+			return
+		}
+		panic(fmt.Sprintf("QTable.matvec: unsupported packed dtype=%d cols=%d", t.Dtype, t.Cols))
+	}
+	sgemv(out, t.F32, x, t.Rows, t.Cols)
+}
+
+func qtableRowBytes(dtype uint32, cols int) (int, error) {
+	blockSize := ggmlBlockSize(dtype)
+	blockElems := ggmlBlockElements(dtype)
+	if blockSize <= 0 || blockElems <= 0 {
+		return 0, fmt.Errorf("unsupported dtype %d", dtype)
+	}
+	if cols%blockElems != 0 {
+		return 0, fmt.Errorf("cols=%d is not divisible by block elements=%d for dtype %d", cols, blockElems, dtype)
+	}
+	return (cols / blockElems) * blockSize, nil
+}
+
 // loadQW loads the [m,k] matrix named `name`, kept PACKED when nt_qmatvec supports
 // its dtype (bytes copied so the GGUF blob can be freed), else dequantized to f32.
 func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
@@ -120,7 +189,7 @@ func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
 		return QW{}, err
 	}
 	dt := int(info.Type)
-	if qmatvecSupported(dt) {
+	if packedMatvecSupported(dt, k) {
 		packed := make([]byte, len(data))
 		copy(packed, data)
 		return QW{Packed: packed, Dtype: dt, M: m, K: k}, nil
@@ -130,6 +199,32 @@ func loadQW(gguf *GGUFFile, name string, m, k int) (QW, error) {
 		return QW{}, err
 	}
 	return QW{F32: f32, Dtype: dt, M: m, K: k}, nil
+}
+
+// loadQTable loads a [rows, cols] table. GGUF stores matrix dims as [cols, rows].
+func loadQTable(gguf *GGUFFile, name string, rows, cols int) (QTable, error) {
+	data, info, err := gguf.GetTensor(name)
+	if err != nil {
+		return QTable{}, err
+	}
+	if err := validateMatrixTensor(info, name, rows, cols); err != nil {
+		return QTable{}, err
+	}
+	dt := int(info.Type)
+	if qtablePackedSupported(dt, cols) {
+		rowBytes, err := qtableRowBytes(info.Type, cols)
+		if err != nil {
+			return QTable{}, err
+		}
+		packed := make([]byte, len(data))
+		copy(packed, data)
+		return QTable{Packed: packed, Dtype: dt, Rows: rows, Cols: cols, RowBytes: rowBytes}, nil
+	}
+	f32, err := dequantToF32(data, info.Type, rows*cols)
+	if err != nil {
+		return QTable{}, err
+	}
+	return QTable{F32: f32, Dtype: dt, Rows: rows, Cols: cols, RowBytes: cols * 4}, nil
 }
 
 func validateMatrixTensor(info *GGUFTensorInfo, name string, m, k int) error {
@@ -165,9 +260,9 @@ type LlamaState struct {
 	Pos int
 }
 
-// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Layer weight
-// matrices are kept packed (copied out of the GGUF blob); embeddings and norms
-// are dequantized to f32.
+// LoadLlamaModel builds a LlamaModel from a parsed GGUF file. Layer matrices
+// and vocab tables are kept packed when their dtype has a runtime kernel; norms
+// and tiny vectors are dequantized to f32.
 func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 	m := gguf.Meta
 
@@ -205,8 +300,8 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 		return nil, fmt.Errorf("load weights: %w", err)
 	}
 
-	// Drop the raw GGUF byte buffer — layer weights are now copied out packed
-	// and embeddings/norms are f32, so the original quantized blob can go.
+	// Drop the raw GGUF byte buffer — layer weights and vocab tables have been
+	// copied out, and norms are f32, so the original quantized blob can go.
 	gguf.TensorData = nil
 	runtime.GC()
 
@@ -242,18 +337,15 @@ func deriveBaseModelLabel(m GGUFMetadata) string {
 	return arch
 }
 
-// loadWeights resolves every tensor in the GGUF and dequantizes it to F32.
+// loadWeights resolves every tensor in the GGUF. Large matrices/tables stay
+// packed when possible; norms and small vectors are dequantized to f32.
 func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 	w := &LlamaWeights{}
 
-	embData, embInfo, err := gguf.GetTensor("token_embd.weight")
+	var err error
+	w.TokenEmbed, err = loadQTable(gguf, "token_embd.weight", cfg.VocabSize, cfg.EmbedDim)
 	if err != nil {
 		return nil, fmt.Errorf("token_embd.weight: %w", err)
-	}
-	embCount := cfg.VocabSize * cfg.EmbedDim
-	w.TokenEmbed, err = dequantToF32(embData, embInfo.Type, embCount)
-	if err != nil {
-		return nil, fmt.Errorf("token_embd dequant: %w", err)
 	}
 
 	w.OutputNorm, err = getF32Tensor(gguf, "output_norm.weight", cfg.EmbedDim)
@@ -262,11 +354,11 @@ func loadWeights(gguf *GGUFFile, cfg *LlamaConfig) (*LlamaWeights, error) {
 	}
 
 	// Output (LM head) — may be tied to token embedding.
-	if outData, outInfo, err := gguf.GetTensor("output.weight"); err == nil {
+	if outInfo, ok := gguf.Tensors["output.weight"]; ok {
 		fmt.Printf("[tongue/model] output.weight: type=%d\n", outInfo.Type)
-		w.Output, err = dequantToF32(outData, outInfo.Type, embCount)
+		w.Output, err = loadQTable(gguf, "output.weight", cfg.VocabSize, cfg.EmbedDim)
 		if err != nil {
-			return nil, fmt.Errorf("output dequant: %w", err)
+			return nil, fmt.Errorf("output.weight: %w", err)
 		}
 	} else {
 		fmt.Printf("[tongue/model] output.weight not found, using tied embeddings\n")
@@ -435,8 +527,8 @@ func (m *LlamaModel) Forward(token int, pos int) {
 	hd := cfg.HeadDim
 	headGroup := cfg.NumHeads / cfg.NumKVHeads
 
-	// Token embedding lookup — direct copy from the F32 table.
-	copy(s.X, w.TokenEmbed[token*dim:token*dim+dim])
+	// Token embedding lookup — dequantize only the selected row when packed.
+	w.TokenEmbed.lookup(s.X, token)
 
 	attnScale := float32(1.0 / math.Sqrt(float64(hd)))
 
@@ -527,7 +619,7 @@ func (m *LlamaModel) Forward(token int, pos int) {
 
 	// Final norm + LM head
 	RMSNorm(s.X, w.OutputNorm, cfg.RMSNormEps)
-	sgemv(s.Logits, w.Output, s.X, cfg.VocabSize, dim)
+	w.Output.matvec(s.Logits, s.X)
 }
 
 // Reset clears the KV cache and position for a fresh generation.
