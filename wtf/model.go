@@ -269,6 +269,9 @@ type LlamaState struct {
 // and vocab tables are kept packed when their dtype has a runtime kernel; norms
 // and tiny vectors are dequantized to f32.
 func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
+	defer func() {
+		_ = gguf.Close()
+	}()
 	m := gguf.Meta
 
 	cfg := LlamaConfig{
@@ -305,8 +308,8 @@ func LoadLlamaModel(gguf *GGUFFile) (*LlamaModel, error) {
 		return nil, fmt.Errorf("load weights: %w", err)
 	}
 
-	// Drop the raw GGUF byte buffer — layer weights and vocab tables have been
-	// copied out, and norms are f32, so the original quantized blob can go.
+	// Drop the raw GGUF buffer/reader: layer weights and vocab tables have been
+	// copied or streamed out, and norms are f32, so the loader source can go.
 	gguf.TensorData = nil
 	runtime.GC()
 

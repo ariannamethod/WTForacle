@@ -116,3 +116,50 @@ func TestGetTensorStreamsFromFileWhenTensorDataDropped(t *testing.T) {
 		t.Fatalf("streamed bytes = %v, want %v", got, payload)
 	}
 }
+
+func TestGetTensorStreamsFromOpenReader(t *testing.T) {
+	dataOffset := int64(16)
+	tensorOffset := uint64(8)
+	payload := []byte{5, 6, 7, 8}
+	raw := make([]byte, int(dataOffset)+int(tensorOffset)+len(payload))
+	copy(raw[int(dataOffset)+int(tensorOffset):], payload)
+
+	path := filepath.Join(t.TempDir(), "tiny-open.gguf")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write fake gguf: %v", err)
+	}
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open fake gguf: %v", err)
+	}
+
+	g := &GGUFFile{
+		Path:       path,
+		DataOffset: dataOffset,
+		DataSize:   int64(len(raw)) - dataOffset,
+		reader:     reader,
+		Tensors: map[string]*GGUFTensorInfo{
+			"tiny.weight": {
+				Name:   "tiny.weight",
+				NDims:  1,
+				Dims:   [4]uint64{1},
+				Type:   ggmlTypeF32,
+				Offset: tensorOffset,
+			},
+		},
+	}
+
+	got, _, err := g.GetTensor("tiny.weight")
+	if err != nil {
+		t.Fatalf("GetTensor: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("streamed bytes = %v, want %v", got, payload)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if g.reader != nil {
+		t.Fatalf("reader still set after Close")
+	}
+}

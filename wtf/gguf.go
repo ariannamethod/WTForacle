@@ -107,6 +107,7 @@ type GGUFFile struct {
 	TensorData []byte // optional in-memory tensor data blob; nil means stream
 	DataOffset int64  // offset where tensor data starts in file
 	DataSize   int64  // byte size of the tensor data region
+	reader     *os.File
 }
 
 func readString(r io.Reader) (string, error) {
@@ -300,7 +301,12 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open GGUF: %w", err)
 	}
-	defer f.Close()
+	keepReader := false
+	defer func() {
+		if !keepReader {
+			_ = f.Close()
+		}
+	}()
 
 	// Read header
 	var magic uint32
@@ -405,13 +411,24 @@ func LoadGGUF(path string) (*GGUFFile, error) {
 	// Parse metadata into structured form
 	meta := parseMetadata(kv)
 
+	keepReader = true
 	return &GGUFFile{
 		Meta:       meta,
 		Tensors:    tensors,
 		Path:       sourcePath,
 		DataOffset: dataOffset,
 		DataSize:   dataSize,
+		reader:     f,
 	}, nil
+}
+
+func (g *GGUFFile) Close() error {
+	if g == nil || g.reader == nil {
+		return nil
+	}
+	err := g.reader.Close()
+	g.reader = nil
+	return err
 }
 
 // parseMetadata extracts model config from GGUF KV pairs
@@ -579,15 +596,22 @@ func (g *GGUFFile) GetTensor(name string) ([]byte, *GGUFTensorInfo, error) {
 	if size > uint64(int(^uint(0)>>1)) {
 		return nil, nil, fmt.Errorf("tensor %s too large to allocate: %d bytes", name, size)
 	}
+
+	buf := make([]byte, int(size))
+	offset := g.DataOffset + int64(start)
+	if g.reader != nil {
+		if _, err := g.reader.ReadAt(buf, offset); err != nil {
+			return nil, nil, fmt.Errorf("read tensor %s: %w", name, err)
+		}
+		return buf, info, nil
+	}
+
 	f, err := os.Open(g.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open GGUF tensor source: %w", err)
 	}
 	defer f.Close()
-
-	buf := make([]byte, int(size))
-	offset := g.DataOffset + int64(start)
-	if _, err := io.ReadFull(io.NewSectionReader(f, offset, int64(size)), buf); err != nil {
+	if _, err := f.ReadAt(buf, offset); err != nil {
 		return nil, nil, fmt.Errorf("read tensor %s: %w", name, err)
 	}
 	return buf, info, nil
