@@ -9,6 +9,8 @@
 
 # WTForacle — the reddit oracle nobody asked for | by [Arianna Method](https://github.com/ariannamethod)
 
+> **Read the [Arianna Method Manifesto](ARIANNA_METHOD_MANIFESTO.md) first.** This repository is governed by it; every instruction here, `CLAUDE.md` included, is subordinate to it.
+
 > *sir this is reddit* (c) reddit  
 
 small-model cynicism. original SmolLM2-360M weights, plus the local Qwen3-0.6B candidate. single Go binary. notorch under the hood. no PyTorch. no Python. no GPU. no apologies. runs on a toaster.
